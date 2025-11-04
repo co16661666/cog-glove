@@ -5,6 +5,8 @@ import queue
 import cv2
 import numpy as np
 
+from markerDetector import getCorners
+
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
@@ -56,15 +58,15 @@ def receiver_thread(client_socket, addr):
 
                 # Convert the color space if necessary (e.g., from RGBA to BGR for OpenCV display)
                 if BYTES_PER_PIXEL == 4:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                    img = cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
                 elif BYTES_PER_PIXEL == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
                 img = cv2.flip(img, 0)  # vertical flip
 
-                # Display in a window
-                cv2.imshow(f"Received Image (Raw)", img)
-                cv2.waitKey(1)
+                corners = getCorners(img)
+
+                print(f"Detected corners: {corners}")
                 
             except Exception as e:
                 print(f"Error decoding raw image data: {e}")
