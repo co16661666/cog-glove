@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 arucoDict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 
 markerIds = list(range(0, 6))
-markerSize = 50  # pixels
+markerSize = 100  # pixels
 
 margin = 1
 # forming grid
@@ -21,7 +21,7 @@ for id in markerIds:
     startX = col * (markerSize + margin) + margin
     grid[startY:(startY + markerSize), startX:(startX + markerSize)] = cv2.aruco.generateImageMarker(arucoDict, id, markerSize)
 
-cv2.imwrite("marker_grid.bmp", grid)
+cv2.imwrite("marker_grid.png", grid, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
 # plt.imshow(markerImage, cmap='gray', interpolation='nearest')
 # plt.axis('off')
