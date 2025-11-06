@@ -23,3 +23,10 @@ def getCorners(image):
         cv2.aruco.drawDetectedMarkers(image, corners, ids)
         cv2.imshow('Detected Markers', image)
         cv2.waitKey(1)
+
+        return corners
+    else:
+        cv2.imshow('Detected Markers', image)
+        cv2.waitKey(1)
+
+        return []
