@@ -7,7 +7,7 @@ arucoDict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 markerIds = list(range(0, 6))
 markerSize = 100  # pixels
 
-margin = 1
+margin = 54
 # forming grid
 gridHeight = 2 * (markerSize + margin) + margin
 gridWidth = 3 * (markerSize + margin) + margin
