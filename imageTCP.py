@@ -5,6 +5,8 @@ import queue
 import cv2
 import numpy as np
 
+import json
+
 from markerDetector import getCorners
 
 # Create a queue to hold messages that the sender thread needs to send
@@ -67,6 +69,36 @@ def receiver_thread(client_socket, addr):
                 corners = getCorners(img)
 
                 print(f"Detected corners: {corners}")
+                # Sample 2 corners detected:
+                '''
+                (
+                    [
+                        [
+                            [604., 603.],
+                            [716., 615.],
+                            [719., 710.],
+                            [610., 697.]
+                        ]
+                    ],
+                    [
+                        [
+                            [739., 534.],
+                            [719., 586.],
+                            [610., 575.],
+                            [639., 527.]
+                        ]
+                    ]
+                )
+                '''
+
+                # Convert np arrays to list for JSON serialization
+                corners_list = []
+                for corner in corners:
+                    corners_list.append(corner.tolist()[0])
+
+                print("JSON: ", json.dumps(corners_list))
+                
+                send_queue.put(json.dumps(corners_list).encode('utf-8'))
                 
             except Exception as e:
                 print(f"Error decoding raw image data: {e}")
@@ -91,7 +123,7 @@ def sender_thread(client_socket, addr):
     while True:
         try:
             # Blocks until an item is available in the queue
-            data_to_send = send_queue.get() 
+            data_to_send = send_queue.get(timeout=0.01) 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
@@ -124,6 +156,7 @@ def handle_client(client_socket, addr):
 
 # Create a socket object
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.settimeout(60)
 
 # Get local machine name
 host = "127.0.0.1"
