@@ -123,7 +123,7 @@ def sender_thread(client_socket, addr):
     while True:
         try:
             # Blocks until an item is available in the queue
-            data_to_send = send_queue.get(timeout=0.01) 
+            data_to_send = send_queue.get() 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
@@ -137,7 +137,7 @@ def handle_client(client_socket, addr):
     print(f'Got a connection from {str(addr)}')
 
     # Send an initial welcome message
-    client_socket.send(b'Server says connected')
+    # client_socket.send(b'Server says connected') # interferes with corner processing in Unity
 
     # 1. Start the Receiver thread
     rx_thread = threading.Thread(target=receiver_thread, args=(client_socket, addr))
