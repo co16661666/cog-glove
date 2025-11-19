@@ -24,7 +24,7 @@ def getCorners(image):
         cv2.imshow('Detected Markers', image)
         cv2.waitKey(1)
 
-        return corners
+        return ids, corners
     else:
         cv2.imshow('Detected Markers', image)
         cv2.waitKey(1)

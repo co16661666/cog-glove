@@ -66,7 +66,7 @@ def receiver_thread(client_socket, addr):
 
                 img = cv2.flip(img, 0)  # vertical flip
 
-                corners = getCorners(img)
+                ids, corners = getCorners(img)
 
                 print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
@@ -91,10 +91,17 @@ def receiver_thread(client_socket, addr):
                 )
                 '''
 
-                # Convert np arrays to list for JSON serialization
-                corners_list = []
-                for corner in corners:
-                    corners_list.append(corner.tolist()[0])
+                corners_list = None
+
+                if len(ids) > 0:
+                    corners_list = {
+                        "id": ids[0],
+
+                        "corner1": corners[0].tolist()[0][0],
+                        "corner2": corners[0].tolist()[0][1],
+                        "corner3": corners[0].tolist()[0][2],
+                        "corner4": corners[0].tolist()[0][3]
+                    }
 
                 print("JSON: ", json.dumps(corners_list))
                 
