@@ -12,7 +12,7 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
-CAMERA_RESOLUTION = (1280, 960)
+CAMERA_RESOLUTION = (800, 600)
 BYTES_PER_PIXEL = 4
 
 def receiver_thread(client_socket, addr):
@@ -20,7 +20,7 @@ def receiver_thread(client_socket, addr):
     print(f"Receiver started for {addr}")
     while True:
         try:
-            print("Waiting to receive length...")
+            # print("Waiting to receive length...")
 
             length = b''
             while len(length) < 4:
@@ -32,7 +32,7 @@ def receiver_thread(client_socket, addr):
 
                 length += remaining
 
-            print(f"Received length bytes from {str(addr)}: {length}")
+            # print(f"Received length bytes from {str(addr)}: {length}")
 
             image_size = int.from_bytes(length, byteorder='big')
 
@@ -68,7 +68,7 @@ def receiver_thread(client_socket, addr):
 
                 ids, corners = getCorners(img)
 
-                print(f"Detected corners: {corners}")
+                # print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
                 '''
                 (
@@ -91,22 +91,22 @@ def receiver_thread(client_socket, addr):
                 )
                 '''
 
-                corners_list = None
-
+                corners_list = {}
+                
                 if len(ids) > 0:
                     corners_list = {
-                        "id": ids[0],
+                        "id": int(ids[0][0]),
 
-                        "corner1": corners[0].tolist()[0][0],
-                        "corner2": corners[0].tolist()[0][1],
-                        "corner3": corners[0].tolist()[0][2],
-                        "corner4": corners[0].tolist()[0][3]
+                        "corner0": corners[0].tolist()[0][0],
+                        "corner1": corners[0].tolist()[0][1],
+                        "corner2": corners[0].tolist()[0][2],
+                        "corner3": corners[0].tolist()[0][3]
                     }
 
-                print("JSON: ", json.dumps(corners_list))
-                
-                send_queue.put(json.dumps(corners_list).encode('utf-8'))
-                
+                    # print("JSON: ", json.dumps(corners_list))
+                    json_send_message = json.dumps(corners_list) + '\n'
+                    send_queue.put(json_send_message.encode('utf-8'))
+                    
             except Exception as e:
                 print(f"Error decoding raw image data: {e}")
             
