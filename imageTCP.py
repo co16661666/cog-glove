@@ -12,8 +12,8 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
-CAMERA_RESOLUTION = (800, 600)
-BYTES_PER_PIXEL = 4
+# CAMERA_RESOLUTION = (800, 600)
+# BYTES_PER_PIXEL = 4
 
 def receiver_thread(client_socket, addr):
     """Continuously receives data from the client."""
@@ -56,17 +56,14 @@ def receiver_thread(client_socket, addr):
                 # Reshape the 1D array into the image dimensions (H, W, Channels)
                 # Note: If client uses Color32 (RGBA), channels=4. 
                 # If client uses RGB24, channels=3.
-                img = np_arr.reshape((CAMERA_RESOLUTION[1], CAMERA_RESOLUTION[0], BYTES_PER_PIXEL))
+                img = cv2.imdecode(np_arr, 1)
 
-                # Convert the color space if necessary (e.g., from RGBA to BGR for OpenCV display)
-                if BYTES_PER_PIXEL == 4:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
-                elif BYTES_PER_PIXEL == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-
-                img = cv2.flip(img, 0)  # vertical flip
-
-                ids, corners = getCorners(img)
+                if img is None:
+                    print("Failed to decode image")
+                    continue
+                
+                grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                ids, corners = getCorners(grayscale)
 
                 # print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
