@@ -6,52 +6,24 @@ import cv2
 import numpy as np
 
 import json
+import time
 
 from markerDetector import getCorners
 
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
+latest_image_buffer = []
 # CAMERA_RESOLUTION = (800, 600)
 # BYTES_PER_PIXEL = 4
 
-def receiver_thread(client_socket, addr):
-    """Continuously receives data from the client."""
-    print(f"Receiver started for {addr}")
+def process_image_thread():
+    # Display image
     while True:
-        try:
-            # print("Waiting to receive length...")
-
-            length = b''
-            while len(length) < 4:
-                remaining = client_socket.recv(4 - len(length))
-
-                if not remaining:
-                    print("connection closed by client during length reception")
-                    break
-
-                length += remaining
-
-            # print(f"Received length bytes from {str(addr)}: {length}")
-
-            image_size = int.from_bytes(length, byteorder='big')
-
-            image = b''
-            while len(image) < image_size:
-                chunk = client_socket.recv(image_size - len(image))
-
-                if not chunk:
-                    print("connection closed by client during image reception")
-                    break
-
-                image += chunk
-
-            print(f"Received from {str(addr)} image size {image_size} bytes")
-
-            # Display image
+        if len(latest_image_buffer) > 0:
             try:
                 # Reshape the raw byte array into a NumPy array
-                np_arr = np.frombuffer(image, np.uint8)
+                np_arr = np.frombuffer(latest_image_buffer.pop(0), np.uint8)
                 
                 # Reshape the 1D array into the image dimensions (H, W, Channels)
                 # Note: If client uses Color32 (RGBA), channels=4. 
@@ -106,11 +78,49 @@ def receiver_thread(client_socket, addr):
                     
             except Exception as e:
                 print(f"Error decoding raw image data: {e}")
-            
-            # --- Business Logic: Enqueue a response if needed ---
-            # Example: Echo the message back or send a canned response
-            # response = f"Echo: {message}"
-            # send_queue.put(response.encode('ascii'))
+    
+    # --- Business Logic: Enqueue a response if needed ---
+    # Example: Echo the message back or send a canned response
+    # response = f"Echo: {message}"
+    # send_queue.put(response.encode('ascii'))
+
+def receiver_thread(client_socket, addr):
+    """Continuously receives data from the client."""
+    print(f"Receiver started for {addr}")
+    while True:
+        try:
+            # print("Waiting to receive length...")
+
+            length = b''
+            while len(length) < 4:
+                remaining = client_socket.recv(4 - len(length))
+
+                if not remaining:
+                    print("connection closed by client during length reception")
+                    break
+
+                length += remaining
+
+            # print(f"Received length bytes from {str(addr)}: {length}")
+
+            image_size = int.from_bytes(length, byteorder='big')
+
+            image = b''
+            while len(image) < image_size:
+                chunk = client_socket.recv(image_size - len(image))
+
+                if not chunk:
+                    print("connection closed by client during image reception")
+                    break
+
+                image += chunk
+
+            print(f"Received from {str(addr)} image size {image_size} bytes")
+
+            if len(latest_image_buffer) > 0:
+                latest_image_buffer[0] = image
+            else:
+                latest_image_buffer.append(image)
             
         except ConnectionResetError:
             break
@@ -151,9 +161,14 @@ def handle_client(client_socket, addr):
     tx_thread = threading.Thread(target=sender_thread, args=(client_socket, addr))
     tx_thread.start()
 
+    # 3. Start the Image Processor thread
+    proc_thread = threading.Thread(target=process_image_thread, args=())
+    proc_thread.start()
+
     # Wait for both threads to finish (which happens only when an error occurs)
     rx_thread.join()
     tx_thread.join()
+    proc_thread.join()
 
     client_socket.close()
     print(f"Connection with {addr} closed.")
