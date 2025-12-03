@@ -12,7 +12,7 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
-CAMERA_RESOLUTION = (1280, 960)
+CAMERA_RESOLUTION = (800, 600)
 BYTES_PER_PIXEL = 4
 
 def receiver_thread(client_socket, addr):
@@ -20,7 +20,7 @@ def receiver_thread(client_socket, addr):
     print(f"Receiver started for {addr}")
     while True:
         try:
-            print("Waiting to receive length...")
+            # print("Waiting to receive length...")
 
             length = b''
             while len(length) < 4:
@@ -32,7 +32,7 @@ def receiver_thread(client_socket, addr):
 
                 length += remaining
 
-            print(f"Received length bytes from {str(addr)}: {length}")
+            # print(f"Received length bytes from {str(addr)}: {length}")
 
             image_size = int.from_bytes(length, byteorder='big')
 
@@ -66,9 +66,9 @@ def receiver_thread(client_socket, addr):
 
                 img = cv2.flip(img, 0)  # vertical flip
 
-                corners = getCorners(img)
+                ids, corners = getCorners(img)
 
-                print(f"Detected corners: {corners}")
+                # print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
                 '''
                 (
@@ -91,15 +91,22 @@ def receiver_thread(client_socket, addr):
                 )
                 '''
 
-                # Convert np arrays to list for JSON serialization
-                corners_list = []
-                for corner in corners:
-                    corners_list.append(corner.tolist()[0])
+                corners_list = {}
+                
+                if len(ids) > 0:
+                    corners_list = {
+                        "id": int(ids[0][0]),
 
-                print("JSON: ", json.dumps(corners_list))
-                
-                send_queue.put(json.dumps(corners_list).encode('utf-8'))
-                
+                        "corner0": corners[0].tolist()[0][0],
+                        "corner1": corners[0].tolist()[0][1],
+                        "corner2": corners[0].tolist()[0][2],
+                        "corner3": corners[0].tolist()[0][3]
+                    }
+
+                    # print("JSON: ", json.dumps(corners_list))
+                    json_send_message = json.dumps(corners_list) + '\n'
+                    send_queue.put(json_send_message.encode('utf-8'))
+                    
             except Exception as e:
                 print(f"Error decoding raw image data: {e}")
             
@@ -123,7 +130,7 @@ def sender_thread(client_socket, addr):
     while True:
         try:
             # Blocks until an item is available in the queue
-            data_to_send = send_queue.get(timeout=0.01) 
+            data_to_send = send_queue.get() 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
@@ -137,7 +144,7 @@ def handle_client(client_socket, addr):
     print(f'Got a connection from {str(addr)}')
 
     # Send an initial welcome message
-    client_socket.send(b'Server says connected')
+    # client_socket.send(b'Server says connected') # interferes with corner processing in Unity
 
     # 1. Start the Receiver thread
     rx_thread = threading.Thread(target=receiver_thread, args=(client_socket, addr))

@@ -18,13 +18,13 @@ def getCorners(image):
     corners, ids, rejected = detector.detectMarkers(image)
 
     # Print the detected markers
-    print("Detected markers:", ids)
+    # print("Detected markers:", ids)
     if ids is not None:
         cv2.aruco.drawDetectedMarkers(image, corners, ids)
         cv2.imshow('Detected Markers', image)
         cv2.waitKey(1)
 
-        return corners
+        return ids, corners
     else:
         cv2.imshow('Detected Markers', image)
         cv2.waitKey(1)
