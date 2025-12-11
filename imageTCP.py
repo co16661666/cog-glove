@@ -35,7 +35,12 @@ def process_image_thread():
                     continue
                 
                 grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                ids, corners = getCorners(grayscale)
+                result = getCorners(grayscale)
+
+                if not result or len(result) == 0:
+                    continue
+
+                ids, corners = result
 
                 # print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
