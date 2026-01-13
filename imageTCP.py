@@ -13,13 +13,16 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
+# Buffer to hold lastest image
 latest_image_buffer = []
+
 # CAMERA_RESOLUTION = (800, 600)
 # BYTES_PER_PIXEL = 4
 
 def process_image_thread():
     # Display image
     while True:
+        # Check if image is in buffer
         if len(latest_image_buffer) > 0:
             try:
                 # Reshape the raw byte array into a NumPy array
@@ -34,9 +37,12 @@ def process_image_thread():
                     print("Failed to decode image")
                     continue
                 
+                # Convert to grayscale
                 grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
                 result = getCorners(grayscale)
 
+                # Make sure OpenCV result is valid
                 if not result or len(result) == 0:
                     continue
 
@@ -78,7 +84,9 @@ def process_image_thread():
                     }
 
                     # print("JSON: ", json.dumps(corners_list))
+                    # Convert to JSON for sending
                     json_send_message = json.dumps(corners_list) + '\n'
+                    # Put message in send queue
                     send_queue.put(json_send_message.encode('utf-8'))
                     
             except Exception as e:
@@ -96,6 +104,7 @@ def receiver_thread(client_socket, addr):
         try:
             # print("Waiting to receive length...")
 
+            # Receiver length of incoming image
             length = b''
             while len(length) < 4:
                 remaining = client_socket.recv(4 - len(length))
@@ -110,6 +119,7 @@ def receiver_thread(client_socket, addr):
 
             image_size = int.from_bytes(length, byteorder='big')
 
+            # Receive image
             image = b''
             while len(image) < image_size:
                 chunk = client_socket.recv(image_size - len(image))
@@ -122,6 +132,7 @@ def receiver_thread(client_socket, addr):
 
             print(f"Received from {str(addr)} image size {image_size} bytes")
 
+            # If buffer is not empty, replace old data; otherwise, append new data
             if len(latest_image_buffer) > 0:
                 latest_image_buffer[0] = image
             else:
