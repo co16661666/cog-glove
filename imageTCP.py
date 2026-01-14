@@ -1,3 +1,4 @@
+from collections import deque
 import socket
 import threading
 import queue
@@ -13,8 +14,8 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
-# Buffer to hold lastest image
-latest_image_buffer = []
+# Buffer to hold lastest image, deque to automatically discard old images
+latest_image_buffer = deque(maxlen=1)
 
 # CAMERA_RESOLUTION = (800, 600)
 # BYTES_PER_PIXEL = 4
@@ -26,7 +27,7 @@ def process_image_thread():
         if len(latest_image_buffer) > 0:
             try:
                 # Reshape the raw byte array into a NumPy array
-                np_arr = np.frombuffer(latest_image_buffer.pop(0), np.uint8)
+                np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
                 
                 # Reshape the 1D array into the image dimensions (H, W, Channels)
                 # Note: If client uses Color32 (RGBA), channels=4. 
@@ -100,6 +101,29 @@ def process_image_thread():
 def receiver_thread(client_socket, addr):
     """Continuously receives data from the client."""
     print(f"Receiver started for {addr}")
+
+    global camera_matrix
+    print(f"Receiver started for {addr}")
+    
+    # --- INTRINSICS PHASE ---
+    try:
+        # Unity sends "fx,fy,cx,cy" as a raw UTF8 string first
+        handshake_data = client_socket.recv(1024).decode('utf-8')
+        if handshake_data:
+            vals = [float(x) for x in handshake_data.split(',')]
+            camera_matrix = np.array([
+                [vals[0], 0,       vals[2]],
+                [0,       vals[1], vals[3]],
+                [0,       0,       1.0]
+            ], dtype=np.float32)
+            print(f"camera intrinsics received:\n{camera_matrix}")
+            # Send confirmation back so Unity starts streaming images
+            send_queue.put("HANDSHAKE_OK\n".encode('utf-8'))
+    except Exception as e:
+        print(f"Handshake failed: {e}")
+        return
+    
+    # --- IMAGE RECEIVING PHASE ---
     while True:
         try:
             # print("Waiting to receive length...")
