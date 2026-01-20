@@ -1,3 +1,6 @@
+import sys
+
+from collections import deque
 import socket
 import threading
 import queue
@@ -13,20 +16,65 @@ from markerDetector import getCorners
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
-# Buffer to hold lastest image
-latest_image_buffer = []
+# Buffer to hold lastest image, deque to automatically discard old images
+latest_image_buffer = deque(maxlen=1)
+
+# Counter for saving images
+image_save_counter = 0
+image_save_lock = threading.Lock()
+MAX_IMAGES_TO_SAVE = 0
+
+# 3D pose estimation parameters
+TAG_SIZE = 0.031 # ArUco tag size (m)
+obj_points = np.array([
+    [-TAG_SIZE/2,  TAG_SIZE/2, 0],
+    [ TAG_SIZE/2,  TAG_SIZE/2, 0],
+    [ TAG_SIZE/2, -TAG_SIZE/2, 0],
+    [-TAG_SIZE/2, -TAG_SIZE/2, 0]
+], dtype=np.float32)
+
+camera_matrix = np.eye(3, dtype=np.float32)
+dist_coeffs = np.zeros((4, 1))
 
 # CAMERA_RESOLUTION = (800, 600)
 # BYTES_PER_PIXEL = 4
 
+# Image receive resolution
+RECEIVE_RESOLUTION = (640.0, 640.0)
+
+def scale_camera_matrix(vals):
+    # vals = [fx, fy, cx, cy, orig_w, orig_h]
+    # We ignore vals[4] and [5] because the Quest reported 800,600 (incorrectly)
+    s = RECEIVE_RESOLUTION[0] / vals[4]
+    
+    # IMPORTANT: Use the SAME scale for Focal Length to keep the 3D math uniform
+    fx_scaled = vals[0] * s
+    fy_scaled = vals[1] * s # Use sx here too! 
+    
+    # Principal Point Scaling
+    # If Unity is stretching the image to 800x600:
+    cx_scaled = vals[2] * s
+    cy_scaled = vals[3] * s
+    
+    print(f"Scale: {s}, Scaled CX: {cx_scaled}, CY: {cy_scaled}")
+
+    return np.array([
+        [fx_scaled, 0,         cx_scaled],
+        [0,         fy_scaled, cy_scaled],
+        [0,         0,         1.0]
+    ], dtype=np.float32)
+
 def process_image_thread():
+    global camera_matrix
+    global image_save_counter
+
     # Display image
     while True:
         # Check if image is in buffer
         if len(latest_image_buffer) > 0:
             try:
                 # Reshape the raw byte array into a NumPy array
-                np_arr = np.frombuffer(latest_image_buffer.pop(0), np.uint8)
+                np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
                 
                 # Reshape the 1D array into the image dimensions (H, W, Channels)
                 # Note: If client uses Color32 (RGBA), channels=4. 
@@ -36,6 +84,14 @@ def process_image_thread():
                 if img is None:
                     print("Failed to decode image")
                     continue
+                
+                # Save first 20 images to JPG files
+                with image_save_lock:
+                    if image_save_counter < MAX_IMAGES_TO_SAVE:
+                        filename = f"image_{image_save_counter:03d}.jpg"
+                        cv2.imwrite(filename, img)
+                        print(f"Saved image {image_save_counter + 1}/{MAX_IMAGES_TO_SAVE} to {filename}")
+                        image_save_counter += 1
                 
                 # Convert to grayscale
                 grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -47,6 +103,10 @@ def process_image_thread():
                     continue
 
                 ids, corners = result
+
+                # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+                # for corner in corners:
+                #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
 
                 # print(f"Detected corners: {corners}")
                 # Sample 2 corners detected:
@@ -71,21 +131,24 @@ def process_image_thread():
                 )
                 '''
 
-                corners_list = {}
+                marker_data = {}
                 
                 if len(ids) > 0:
-                    corners_list = {
-                        "id": int(ids[0][0]),
+                    image_points = corners[0].reshape(4, 2)
 
-                        "corner0": corners[0].tolist()[0][0],
-                        "corner1": corners[0].tolist()[0][1],
-                        "corner2": corners[0].tolist()[0][2],
-                        "corner3": corners[0].tolist()[0][3]
+                    success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                    if success:
+                        rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
+                    
+                    marker_data = {
+                        "id": int(ids[0][0]),
+                        "tvec": tvec.flatten().tolist(),
+                        "rvec": rvec.flatten().tolist()
                     }
 
                     # print("JSON: ", json.dumps(corners_list))
                     # Convert to JSON for sending
-                    json_send_message = json.dumps(corners_list) + '\n'
+                    json_send_message = json.dumps(marker_data) + '\n'
                     # Put message in send queue
                     send_queue.put(json_send_message.encode('utf-8'))
                     
@@ -100,6 +163,23 @@ def process_image_thread():
 def receiver_thread(client_socket, addr):
     """Continuously receives data from the client."""
     print(f"Receiver started for {addr}")
+    global camera_matrix
+    
+    # --- INTRINSICS PHASE ---
+    try:
+        # Unity sends "fx,fy,cx,cy" as a raw UTF8 string first
+        handshake_data = client_socket.recv(1024).decode('utf-8')
+        if handshake_data:
+            vals = [float(x) for x in handshake_data.split(',')]
+            camera_matrix = scale_camera_matrix(vals)
+            print(f"camera intrinsics received:\n{camera_matrix}")
+            # Send confirmation back so Unity starts streaming images
+            send_queue.put("HANDSHAKE_OK\n".encode('utf-8'))
+    except Exception as e:
+        print(f"Handshake failed: {e}")
+        return
+    
+    # --- IMAGE RECEIVING PHASE ---
     while True:
         try:
             # print("Waiting to receive length...")
@@ -111,6 +191,7 @@ def receiver_thread(client_socket, addr):
 
                 if not remaining:
                     print("connection closed by client during length reception")
+                    sys.exit()
                     break
 
                 length += remaining
@@ -130,7 +211,7 @@ def receiver_thread(client_socket, addr):
 
                 image += chunk
 
-            print(f"Received from {str(addr)} image size {image_size} bytes")
+            # print(f"Received from {str(addr)} image size {image_size} bytes")
 
             # If buffer is not empty, replace old data; otherwise, append new data
             if len(latest_image_buffer) > 0:
