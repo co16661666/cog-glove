@@ -25,13 +25,169 @@ image_save_lock = threading.Lock()
 MAX_IMAGES_TO_SAVE = 0
 
 # 3D pose estimation parameters
-TAG_SIZE = 0.031 # ArUco tag size (m)
-obj_points = np.array([
-    [-TAG_SIZE/2,  TAG_SIZE/2, 0],
-    [ TAG_SIZE/2,  TAG_SIZE/2, 0],
-    [ TAG_SIZE/2, -TAG_SIZE/2, 0],
-    [-TAG_SIZE/2, -TAG_SIZE/2, 0]
-], dtype=np.float32)
+TAG_AREA = 0.031 # ArUco tag area (m)
+TAG_WIDTH = 0.01323
+MARGIN = 0.0045
+
+def get_rotation_matrix_90(axis, num_rotations):
+    sin90 = 1
+    rot_mat = np.eye(3, dtype=int)
+    final_rot = np.eye(3, dtype=int)
+
+    if num_rotations == 0:
+        return final_rot
+    elif num_rotations > 0:
+        sin90 = 1
+    else:
+        sin90 = -1
+    
+    if axis == 'x':
+        rot_mat = np.array([
+            [1, 0, 0],
+            [0, 0, -sin90],
+            [0, sin90, 0]
+        ])
+        
+    elif axis == 'y':
+        rot_mat = np.array([
+            [0, 0, sin90],
+            [0, 1, 0],
+            [-sin90, 0, 0]
+        ])
+    
+    else:
+        rot_mat = np.array([
+            [0, -sin90, 0],
+            [sin90, 0, 0],
+            [0, 0, 1]
+        ])
+    
+    for i in range(abs(num_rotations)):
+        final_rot @= rot_mat
+
+    return final_rot
+
+template_tag = {
+    # Front view
+    # TL
+    0 :
+    np.array([
+        [-TAG_AREA / 2, TAG_AREA / 2, 0],
+        [-MARGIN / 2, TAG_AREA / 2, 0],
+        [-MARGIN / 2, MARGIN / 2, 0],
+        [-TAG_AREA / 2, MARGIN / 2, 0]
+    ]),
+
+    # TR
+    1 :
+    np.array([
+        [MARGIN / 2, TAG_AREA / 2, 0],
+        [TAG_AREA / 2, TAG_AREA / 2, 0],
+        [TAG_AREA / 2, MARGIN / 2, 0],
+        [MARGIN / 2, MARGIN / 2, 0]
+    ]),
+
+    # BL
+    2 :
+    np.array([
+        [-TAG_AREA / 2, -MARGIN / 2, 0],
+        [-MARGIN / 2, -MARGIN / 2, 0],
+        [-MARGIN / 2, -TAG_AREA / 2, 0],
+        [-TAG_AREA / 2, -TAG_AREA / 2, 0]
+    ]),
+
+    # BR
+    3 :
+    np.array([
+        [MARGIN / 2, -MARGIN / 2, 0],
+        [TAG_AREA / 2, -MARGIN / 2, 0],
+        [TAG_AREA / 2, -TAG_AREA / 2, 0],
+        [MARGIN / 2, -TAG_AREA / 2, 0]
+    ])
+}
+
+tag_points_3D = {}
+offset = []
+rot_axis = 'x'
+rot_amount = 0
+
+for i in range(0, 24, 4):
+    if i == 0:
+        # Top Face
+        rot_axis = 'x'
+        rot_amount = -1 # Num 90 deg rotations
+
+        offset = np.array([ # Face offset from cube center
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0]
+        ])
+
+    elif i == 4:
+        # Back face
+        rot_axis = 'y'
+        rot_amount = -2
+
+        offset = np.array([
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)]
+        ])
+
+    elif i == 8:
+        # Left Face
+        rot_axis = 'y'
+        rot_amount = -1
+
+        offset = np.array([
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0]
+        ])
+
+    elif i == 12:
+        # Front Face
+        rot_axis = 'y'
+        rot_amount = 0
+
+        offset = np.array([
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2]
+        ])
+
+    elif i == 16:
+        # Right Face
+        rot_axis = 'y'
+        rot_amount = 1
+
+        offset = np.array([
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0]
+        ])
+
+    elif i == 20:
+        # Bottom Face
+        rot_axis = 'x'
+        rot_amount = 1
+
+        offset = np.array([
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0]
+        ])
+
+    tag_points_3D[i] = template_tag[i % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 1] = template_tag[(i + 1) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 2] = template_tag[(i + 2) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 3] = template_tag[(i + 3) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
 
 camera_matrix = np.eye(3, dtype=np.float32)
 dist_coeffs = np.zeros((4, 1))
@@ -101,7 +257,8 @@ def process_image_thread():
                 # Make sure OpenCV result is valid
                 if not result or len(result) == 0:
                     continue
-
+                
+                # corners: (N, 4, 2)
                 ids, corners = result
 
                 # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
@@ -109,34 +266,20 @@ def process_image_thread():
                 #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
 
                 # print(f"Detected corners: {corners}")
-                # Sample 2 corners detected:
-                '''
-                (
-                    [
-                        [
-                            [604., 603.],
-                            [716., 615.],
-                            [719., 710.],
-                            [610., 697.]
-                        ]
-                    ],
-                    [
-                        [
-                            [739., 534.],
-                            [719., 586.],
-                            [610., 575.],
-                            [639., 527.]
-                        ]
-                    ]
-                )
-                '''
+                obj_points = []
+                image_points = []
+
+                for i, id in enumerate(ids.flatten()):
+                    obj_points.extend(tag_points_3D[id])
+                    image_points.extend(corners[i].reshape(4, 2))
 
                 marker_data = {}
                 
                 if len(ids) > 0:
-                    image_points = corners[0].reshape(4, 2)
+                    obj_points = np.array(obj_points, dtype=np.float32)
+                    image_points = np.array(image_points, dtype=np.float32)
 
-                    success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                    success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs)
                     if success:
                         rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                     
