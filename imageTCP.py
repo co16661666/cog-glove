@@ -13,6 +13,9 @@ import time
 
 from markerDetector import getCorners
 
+# Program running
+running = True
+
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
@@ -225,78 +228,81 @@ def process_image_thread():
     global image_save_counter
 
     # Display image
-    while True:
+    while running:
         # Check if image is in buffer
-        if len(latest_image_buffer) > 0:
-            try:
-                # Reshape the raw byte array into a NumPy array
-                np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
+        if len(latest_image_buffer) == 0:
+            time.sleep(0.01) # Sleep 10ms to let other threads run
+            continue
+
+        try:
+            # Reshape the raw byte array into a NumPy array
+            np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
+            
+            # Reshape the 1D array into the image dimensions (H, W, Channels)
+            # Note: If client uses Color32 (RGBA), channels=4. 
+            # If client uses RGB24, channels=3.
+            img = cv2.imdecode(np_arr, 1)
+
+            if img is None:
+                print("Failed to decode image")
+                continue
+            
+            # Save first 20 images to JPG files
+            with image_save_lock:
+                if image_save_counter < MAX_IMAGES_TO_SAVE:
+                    filename = f"image_{image_save_counter:03d}.jpg"
+                    cv2.imwrite(filename, img)
+                    print(f"Saved image {image_save_counter + 1}/{MAX_IMAGES_TO_SAVE} to {filename}")
+                    image_save_counter += 1
+            
+            # Convert to grayscale
+            grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            result = getCorners(grayscale)
+
+            # Make sure OpenCV result is valid
+            if not result or len(result) == 0:
+                continue
+            
+            # corners: (N, 4, 2)
+            ids, corners = result
+
+            # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            # for corner in corners:
+            #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
+
+            # print(f"Detected corners: {corners}")
+            obj_points = []
+            image_points = []
+
+            for i, id in enumerate(ids.flatten()):
+                obj_points.extend(tag_points_3D[id])
+                image_points.extend(corners[i].reshape(4, 2))
+
+            marker_data = {}
+            
+            if len(ids) > 0:
+                obj_points = np.array(obj_points, dtype=np.float32)
+                image_points = np.array(image_points, dtype=np.float32)
+
+                success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs)
+                if success:
+                    rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                 
-                # Reshape the 1D array into the image dimensions (H, W, Channels)
-                # Note: If client uses Color32 (RGBA), channels=4. 
-                # If client uses RGB24, channels=3.
-                img = cv2.imdecode(np_arr, 1)
+                marker_data = {
+                    "id": int(ids[0][0]),
+                    "tvec": tvec.flatten().tolist(),
+                    "rvec": rvec.flatten().tolist()
+                }
 
-                if img is None:
-                    print("Failed to decode image")
-                    continue
-                
-                # Save first 20 images to JPG files
-                with image_save_lock:
-                    if image_save_counter < MAX_IMAGES_TO_SAVE:
-                        filename = f"image_{image_save_counter:03d}.jpg"
-                        cv2.imwrite(filename, img)
-                        print(f"Saved image {image_save_counter + 1}/{MAX_IMAGES_TO_SAVE} to {filename}")
-                        image_save_counter += 1
-                
-                # Convert to grayscale
-                grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-                result = getCorners(grayscale)
-
-                # Make sure OpenCV result is valid
-                if not result or len(result) == 0:
-                    continue
-                
-                # corners: (N, 4, 2)
-                ids, corners = result
-
-                # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-                # for corner in corners:
-                #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
-
-                # print(f"Detected corners: {corners}")
-                obj_points = []
-                image_points = []
-
-                for i, id in enumerate(ids.flatten()):
-                    obj_points.extend(tag_points_3D[id])
-                    image_points.extend(corners[i].reshape(4, 2))
-
-                marker_data = {}
-                
-                if len(ids) > 0:
-                    obj_points = np.array(obj_points, dtype=np.float32)
-                    image_points = np.array(image_points, dtype=np.float32)
-
-                    success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs)
-                    if success:
-                        rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
+                # print("JSON: ", json.dumps(corners_list))
+                # Convert to JSON for sending
+                json_send_message = json.dumps(marker_data) + '\n'
+                # Put message in send queue
+                send_queue.put(json_send_message.encode('utf-8'))
                     
-                    marker_data = {
-                        "id": int(ids[0][0]),
-                        "tvec": tvec.flatten().tolist(),
-                        "rvec": rvec.flatten().tolist()
-                    }
-
-                    # print("JSON: ", json.dumps(corners_list))
-                    # Convert to JSON for sending
-                    json_send_message = json.dumps(marker_data) + '\n'
-                    # Put message in send queue
-                    send_queue.put(json_send_message.encode('utf-8'))
-                    
-            except Exception as e:
-                print(f"Error decoding raw image data: {e}")
+        except Exception as e:
+            print(f"Error decoding raw image data: {e}")
     
     # --- Business Logic: Enqueue a response if needed ---
     # Example: Echo the message back or send a canned response
@@ -307,7 +313,10 @@ def receiver_thread(client_socket, addr):
     """Continuously receives data from the client."""
     print(f"Receiver started for {addr}")
     global camera_matrix
+    global running
     
+    client_socket.settimeout(1.0)
+
     # --- INTRINSICS PHASE ---
     try:
         # Unity sends "fx,fy,cx,cy" as a raw UTF8 string first
@@ -323,7 +332,7 @@ def receiver_thread(client_socket, addr):
         return
     
     # --- IMAGE RECEIVING PHASE ---
-    while True:
+    while running:
         try:
             # print("Waiting to receive length...")
 
@@ -362,27 +371,38 @@ def receiver_thread(client_socket, addr):
             else:
                 latest_image_buffer.append(image)
             
-        except ConnectionResetError:
+        except (ConnectionResetError, BrokenPipeError):
+            print("Client disconnected.")
             break
+
         except Exception as e:
             print(f"Receiver error: {e}")
             break
     
     print(f"Receiver for {addr} closing.")
-    # In a real app, you'd signal the sender thread to stop here
 
 def sender_thread(client_socket, addr):
     """Continuously sends data waiting in the queue to the client."""
     print(f"Sender started for {addr}")
-    while True:
+
+    global running
+    
+    client_socket.settimeout(1.0)
+
+    while running:
         try:
             # Blocks until an item is available in the queue
-            data_to_send = send_queue.get() 
+            data_to_send = send_queue.get(timeout=1.0) 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
-        except BrokenPipeError:
+        except queue.Empty:
+            continue
+            
+        except (BrokenPipeError, ConnectionResetError):
+            print("Client disconnected (pipe broken).")
             break
+        
         except Exception as e:
             print(f"Sender error: {e}")
             break
@@ -428,10 +448,18 @@ server_socket.bind((host, port))
 server_socket.listen(5)
 print('Server is listening on port %s...' % port)
 
-while True:
-    # Accept a connection
-    client_socket, addr = server_socket.accept()
+try:
+    while running:
+        # Accept a connection
+        client_socket, addr = server_socket.accept()
 
-    # Create a new thread to handle the client
-    client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-    client_thread.start()
+        # Create a new thread to handle the client
+        client_thread = threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True)
+        client_thread.start()
+
+except KeyboardInterrupt:
+    print("program ended")
+    running = False
+
+finally:
+    server_socket.close()
