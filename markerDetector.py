@@ -9,7 +9,14 @@ def getCorners(image):
         return []
     
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    
     parameters = cv2.aruco.DetectorParameters()
+
+    parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    # parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+    # parameters.cornerRefinementWinSize = 2
+    # parameters.cornerRefinementMinAccuracy = 0.05
+    # parameters.cornerRefinementMaxIterations = 30 # default
 
     # Create the ArUco detector
     detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
