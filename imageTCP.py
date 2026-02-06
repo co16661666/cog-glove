@@ -199,7 +199,10 @@ dist_coeffs = np.zeros((4, 1))
 # BYTES_PER_PIXEL = 4
 
 # Image receive resolution
-RECEIVE_RESOLUTION = (640.0, 640.0)
+# RECEIVE_RESOLUTION = (640.0, 640.0)
+RECEIVE_RESOLUTION = (1280.0, 1280.0)
+
+MANUAL_FOCAL_LENGTH_ADJUST = 1.00
 
 def scale_camera_matrix(vals):
     # vals = [fx, fy, cx, cy, orig_w, orig_h]
@@ -223,10 +226,18 @@ def scale_camera_matrix(vals):
         [0,         0,         1.0]
     ], dtype=np.float32)
 
+    # Manual calibration matrix (from OpenCV calibration tool)
+    # return np.array([[430.90683539 * MANUAL_FOCAL_LENGTH_ADJUST,   0,         319.83419697],
+    #                  [  0,         431.35829214 * MANUAL_FOCAL_LENGTH_ADJUST, 322.411503  ],
+    #                  [  0,            0,            1        ]], dtype=np.float32)
+
 def process_image_thread():
     global camera_matrix
     global image_save_counter
 
+    last_rvec = None
+    last_tvec = None
+    
     # Display image
     while running:
         # Check if image is in buffer
@@ -284,22 +295,49 @@ def process_image_thread():
             if len(ids) > 0:
                 obj_points = np.array(obj_points, dtype=np.float32)
                 image_points = np.array(image_points, dtype=np.float32)
-
-                success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs)
-                if success:
-                    rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                 
-                marker_data = {
-                    "id": int(ids[0][0]),
-                    "tvec": tvec.flatten().tolist(),
-                    "rvec": rvec.flatten().tolist()
-                }
+                if last_rvec is not None and last_tvec is not None:
+                    success, rvec, tvec = cv2.solvePnP(
+                        obj_points, 
+                        image_points, 
+                        camera_matrix, 
+                        dist_coeffs, 
+                        rvec=last_rvec, 
+                        tvec=last_tvec, 
+                        useExtrinsicGuess=True, 
+                        flags=cv2.SOLVEPNP_ITERATIVE
+                    )
+                else:
+                    success, rvec, tvec = cv2.solvePnP(
+                        obj_points,
+                        image_points,
+                        camera_matrix,
+                        dist_coeffs,
+                        flags=cv2.SOLVEPNP_SQPNP
+                    )
+                    
 
-                # print("JSON: ", json.dumps(corners_list))
-                # Convert to JSON for sending
-                json_send_message = json.dumps(marker_data) + '\n'
-                # Put message in send queue
-                send_queue.put(json_send_message.encode('utf-8'))
+                if success:
+                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any():
+                        success = False
+                        last_rvec, last_tvec = None, None # Reset for next frame
+                        continue
+                    else:
+                        # 4. Refine with VVS (Smoother than LM)
+                        rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
+                        last_rvec, last_tvec = rvec, tvec
+                
+                    marker_data = {
+                        "id": int(ids[0][0]),
+                        "tvec": tvec.flatten().tolist(),
+                        "rvec": rvec.flatten().tolist()
+                    }
+
+                    # print("JSON: ", json.dumps(corners_list))
+                    # Convert to JSON for sending
+                    json_send_message = json.dumps(marker_data) + '\n'
+                    # Put message in send queue
+                    send_queue.put(json_send_message.encode('utf-8'))
                     
         except Exception as e:
             print(f"Error decoding raw image data: {e}")
@@ -314,8 +352,6 @@ def receiver_thread(client_socket, addr):
     print(f"Receiver started for {addr}")
     global camera_matrix
     global running
-    
-    client_socket.settimeout(1.0)
 
     # --- INTRINSICS PHASE ---
     try:
@@ -324,6 +360,9 @@ def receiver_thread(client_socket, addr):
         if handshake_data:
             vals = [float(x) for x in handshake_data.split(',')]
             camera_matrix = scale_camera_matrix(vals)
+            # e.g., [[428.43286   0.      319.94586]
+                   # [  0.      428.43286 320.6509 ]
+                   # [  0.        0.        1.     ]]
             print(f"camera intrinsics received:\n{camera_matrix}")
             # Send confirmation back so Unity starts streaming images
             send_queue.put("HANDSHAKE_OK\n".encode('utf-8'))
@@ -343,7 +382,6 @@ def receiver_thread(client_socket, addr):
 
                 if not remaining:
                     print("connection closed by client during length reception")
-                    sys.exit()
                     break
 
                 length += remaining
@@ -386,13 +424,11 @@ def sender_thread(client_socket, addr):
     print(f"Sender started for {addr}")
 
     global running
-    
-    client_socket.settimeout(1.0)
 
     while running:
         try:
             # Blocks until an item is available in the queue
-            data_to_send = send_queue.get(timeout=1.0) 
+            data_to_send = send_queue.get() 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
@@ -450,15 +486,19 @@ print('Server is listening on port %s...' % port)
 
 try:
     while running:
-        # Accept a connection
-        client_socket, addr = server_socket.accept()
+        try:
+            # Accept a connection
+            client_socket, addr = server_socket.accept()
 
-        # Create a new thread to handle the client
-        client_thread = threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True)
-        client_thread.start()
+            # Create a new thread to handle the client
+            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True)
+            client_thread.start()
 
-except KeyboardInterrupt:
-    print("program ended")
+        except socket.timeout:
+            continue
+
+except Exception as e:
+    print(f"program ended: {e}")
     running = False
 
 finally:
