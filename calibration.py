@@ -14,7 +14,7 @@ objp[:,:2] = np.mgrid[0:7,0:4].T.reshape(-1,2)
 objpoints = [] # 3d point in real world space
 imgpoints = [] # 2d points in image plane.
 
-images = sorted(glob.glob('image_*.jpg'))
+images = sorted(glob.glob('image_*.jpg'))[::20]
 
 print(f"Found {len(images)} images")
 print("Looking for 7x4 chessboard pattern (7 columns x 4 rows = 28 inner corners)...")
@@ -36,7 +36,8 @@ for fname in images:
     
     # Try different pattern sizes in case the chessboard size is wrong
     # Format: (columns, rows) - inner corners
-    pattern_sizes = [(7,4), (8,5), (6,4), (7,5), (8,4), (6,5), (9,6), (7,6), (6,6), (5,4), (8,6)]
+    # pattern_sizes = [(7,4), (8,5), (6,4), (7,5), (8,4), (6,5), (9,6), (7,6), (6,6), (5,4), (8,6)]
+    pattern_sizes = [(8,5)]
     found = False
     
     for pattern_size in pattern_sizes:
@@ -56,7 +57,7 @@ for fname in images:
             # Draw and display the corners
             cv.drawChessboardCorners(img, pattern_size, corners2, ret)
             cv.imshow('Chessboard Detected', img)
-            cv.waitKey(50)
+            cv.waitKey(1)
             print(f"✓ {fname}: Found {cols}x{rows} chessboard")
             found = True
             break
@@ -65,7 +66,7 @@ for fname in images:
         print(f"✗ {fname}: Chessboard not found")
         # Show the image so user can see what's actually in it
         cv.imshow('No pattern found - check image', img)
-        cv.waitKey(100)
+        cv.waitKey(2)
 
 cv.destroyAllWindows()
 

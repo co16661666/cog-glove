@@ -13,6 +13,9 @@ import time
 
 from markerDetector import getCorners
 
+# Program running
+running = True
+
 # Create a queue to hold messages that the sender thread needs to send
 send_queue = queue.Queue()
 
@@ -25,13 +28,169 @@ image_save_lock = threading.Lock()
 MAX_IMAGES_TO_SAVE = 0
 
 # 3D pose estimation parameters
-TAG_SIZE = 0.031 # ArUco tag size (m)
-obj_points = np.array([
-    [-TAG_SIZE/2,  TAG_SIZE/2, 0],
-    [ TAG_SIZE/2,  TAG_SIZE/2, 0],
-    [ TAG_SIZE/2, -TAG_SIZE/2, 0],
-    [-TAG_SIZE/2, -TAG_SIZE/2, 0]
-], dtype=np.float32)
+TAG_AREA = 0.031 # ArUco tag area (m)
+TAG_WIDTH = 0.01323
+MARGIN = 0.0045
+
+def get_rotation_matrix_90(axis, num_rotations):
+    sin90 = 1
+    rot_mat = np.eye(3, dtype=int)
+    final_rot = np.eye(3, dtype=int)
+
+    if num_rotations == 0:
+        return final_rot
+    elif num_rotations > 0:
+        sin90 = 1
+    else:
+        sin90 = -1
+    
+    if axis == 'x':
+        rot_mat = np.array([
+            [1, 0, 0],
+            [0, 0, -sin90],
+            [0, sin90, 0]
+        ])
+        
+    elif axis == 'y':
+        rot_mat = np.array([
+            [0, 0, sin90],
+            [0, 1, 0],
+            [-sin90, 0, 0]
+        ])
+    
+    else:
+        rot_mat = np.array([
+            [0, -sin90, 0],
+            [sin90, 0, 0],
+            [0, 0, 1]
+        ])
+    
+    for i in range(abs(num_rotations)):
+        final_rot @= rot_mat
+
+    return final_rot
+
+template_tag = {
+    # Front view
+    # TL
+    0 :
+    np.array([
+        [-TAG_AREA / 2, TAG_AREA / 2, 0],
+        [-MARGIN / 2, TAG_AREA / 2, 0],
+        [-MARGIN / 2, MARGIN / 2, 0],
+        [-TAG_AREA / 2, MARGIN / 2, 0]
+    ]),
+
+    # TR
+    1 :
+    np.array([
+        [MARGIN / 2, TAG_AREA / 2, 0],
+        [TAG_AREA / 2, TAG_AREA / 2, 0],
+        [TAG_AREA / 2, MARGIN / 2, 0],
+        [MARGIN / 2, MARGIN / 2, 0]
+    ]),
+
+    # BL
+    2 :
+    np.array([
+        [-TAG_AREA / 2, -MARGIN / 2, 0],
+        [-MARGIN / 2, -MARGIN / 2, 0],
+        [-MARGIN / 2, -TAG_AREA / 2, 0],
+        [-TAG_AREA / 2, -TAG_AREA / 2, 0]
+    ]),
+
+    # BR
+    3 :
+    np.array([
+        [MARGIN / 2, -MARGIN / 2, 0],
+        [TAG_AREA / 2, -MARGIN / 2, 0],
+        [TAG_AREA / 2, -TAG_AREA / 2, 0],
+        [MARGIN / 2, -TAG_AREA / 2, 0]
+    ])
+}
+
+tag_points_3D = {}
+offset = []
+rot_axis = 'x'
+rot_amount = 0
+
+for i in range(0, 24, 4):
+    if i == 0:
+        # Top Face
+        rot_axis = 'x'
+        rot_amount = -1 # Num 90 deg rotations
+
+        offset = np.array([ # Face offset from cube center
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0],
+            [0, MARGIN + TAG_AREA / 2, 0]
+        ])
+
+    elif i == 4:
+        # Back face
+        rot_axis = 'y'
+        rot_amount = -2
+
+        offset = np.array([
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)],
+            [0, 0, -(MARGIN + TAG_AREA / 2)]
+        ])
+
+    elif i == 8:
+        # Left Face
+        rot_axis = 'y'
+        rot_amount = -1
+
+        offset = np.array([
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0],
+            [-(MARGIN + TAG_AREA / 2), 0, 0]
+        ])
+
+    elif i == 12:
+        # Front Face
+        rot_axis = 'y'
+        rot_amount = 0
+
+        offset = np.array([
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2],
+            [0, 0, MARGIN + TAG_AREA / 2]
+        ])
+
+    elif i == 16:
+        # Right Face
+        rot_axis = 'y'
+        rot_amount = 1
+
+        offset = np.array([
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0],
+            [MARGIN + TAG_AREA / 2, 0, 0]
+        ])
+
+    elif i == 20:
+        # Bottom Face
+        rot_axis = 'x'
+        rot_amount = 1
+
+        offset = np.array([
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0],
+            [0, -(MARGIN + TAG_AREA / 2), 0]
+        ])
+
+    tag_points_3D[i] = template_tag[i % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 1] = template_tag[(i + 1) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 2] = template_tag[(i + 2) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
+    tag_points_3D[i + 3] = template_tag[(i + 3) % 4] @ get_rotation_matrix_90(rot_axis, rot_amount).T + offset
 
 camera_matrix = np.eye(3, dtype=np.float32)
 dist_coeffs = np.zeros((4, 1))
@@ -40,7 +199,10 @@ dist_coeffs = np.zeros((4, 1))
 # BYTES_PER_PIXEL = 4
 
 # Image receive resolution
-RECEIVE_RESOLUTION = (640.0, 640.0)
+# RECEIVE_RESOLUTION = (640.0, 640.0)
+RECEIVE_RESOLUTION = (1280.0, 1280.0)
+
+MANUAL_FOCAL_LENGTH_ADJUST = 1.00
 
 def scale_camera_matrix(vals):
     # vals = [fx, fy, cx, cy, orig_w, orig_h]
@@ -64,82 +226,107 @@ def scale_camera_matrix(vals):
         [0,         0,         1.0]
     ], dtype=np.float32)
 
+    # Manual calibration matrix (from OpenCV calibration tool)
+    # return np.array([[430.90683539 * MANUAL_FOCAL_LENGTH_ADJUST,   0,         319.83419697],
+    #                  [  0,         431.35829214 * MANUAL_FOCAL_LENGTH_ADJUST, 322.411503  ],
+    #                  [  0,            0,            1        ]], dtype=np.float32)
+
 def process_image_thread():
     global camera_matrix
     global image_save_counter
 
+    last_rvec = None
+    last_tvec = None
+    
     # Display image
-    while True:
+    while running:
         # Check if image is in buffer
-        if len(latest_image_buffer) > 0:
-            try:
-                # Reshape the raw byte array into a NumPy array
-                np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
+        if len(latest_image_buffer) == 0:
+            time.sleep(0.01) # Sleep 10ms to let other threads run
+            continue
+
+        try:
+            # Reshape the raw byte array into a NumPy array
+            np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
+            
+            # Reshape the 1D array into the image dimensions (H, W, Channels)
+            # Note: If client uses Color32 (RGBA), channels=4. 
+            # If client uses RGB24, channels=3.
+            img = cv2.imdecode(np_arr, 1)
+
+            if img is None:
+                print("Failed to decode image")
+                continue
+            
+            # Save first 20 images to JPG files
+            with image_save_lock:
+                if image_save_counter < MAX_IMAGES_TO_SAVE:
+                    filename = f"image_{image_save_counter:03d}.jpg"
+                    cv2.imwrite(filename, img)
+                    print(f"Saved image {image_save_counter + 1}/{MAX_IMAGES_TO_SAVE} to {filename}")
+                    image_save_counter += 1
+            
+            # Convert to grayscale
+            grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            result = getCorners(grayscale)
+
+            # Make sure OpenCV result is valid
+            if not result or len(result) == 0:
+                continue
+            
+            # corners: (N, 4, 2)
+            ids, corners = result
+
+            # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            # for corner in corners:
+            #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
+
+            # print(f"Detected corners: {corners}")
+            obj_points = []
+            image_points = []
+
+            for i, id in enumerate(ids.flatten()):
+                obj_points.extend(tag_points_3D[id])
+                image_points.extend(corners[i].reshape(4, 2))
+
+            marker_data = {}
+            
+            if len(ids) > 0:
+                obj_points = np.array(obj_points, dtype=np.float32)
+                image_points = np.array(image_points, dtype=np.float32)
                 
-                # Reshape the 1D array into the image dimensions (H, W, Channels)
-                # Note: If client uses Color32 (RGBA), channels=4. 
-                # If client uses RGB24, channels=3.
-                img = cv2.imdecode(np_arr, 1)
-
-                if img is None:
-                    print("Failed to decode image")
-                    continue
-                
-                # Save first 20 images to JPG files
-                with image_save_lock:
-                    if image_save_counter < MAX_IMAGES_TO_SAVE:
-                        filename = f"image_{image_save_counter:03d}.jpg"
-                        cv2.imwrite(filename, img)
-                        print(f"Saved image {image_save_counter + 1}/{MAX_IMAGES_TO_SAVE} to {filename}")
-                        image_save_counter += 1
-                
-                # Convert to grayscale
-                grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-                result = getCorners(grayscale)
-
-                # Make sure OpenCV result is valid
-                if not result or len(result) == 0:
-                    continue
-
-                ids, corners = result
-
-                # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-                # for corner in corners:
-                #     cv2.cornerSubPix(grayscale, corner, (5, 5), (-1, -1), criteria)
-
-                # print(f"Detected corners: {corners}")
-                # Sample 2 corners detected:
-                '''
-                (
-                    [
-                        [
-                            [604., 603.],
-                            [716., 615.],
-                            [719., 710.],
-                            [610., 697.]
-                        ]
-                    ],
-                    [
-                        [
-                            [739., 534.],
-                            [719., 586.],
-                            [610., 575.],
-                            [639., 527.]
-                        ]
-                    ]
-                )
-                '''
-
-                marker_data = {}
-                
-                if len(ids) > 0:
-                    image_points = corners[0].reshape(4, 2)
-
-                    success, rvec, tvec = cv2.solvePnP(obj_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-                    if success:
-                        rvec, tvec = cv2.solvePnPRefineLM(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
+                if last_rvec is not None and last_tvec is not None:
+                    success, rvec, tvec = cv2.solvePnP(
+                        obj_points, 
+                        image_points, 
+                        camera_matrix, 
+                        dist_coeffs, 
+                        rvec=last_rvec, 
+                        tvec=last_tvec, 
+                        useExtrinsicGuess=True, 
+                        flags=cv2.SOLVEPNP_ITERATIVE
+                    )
+                else:
+                    success, rvec, tvec = cv2.solvePnP(
+                        obj_points,
+                        image_points,
+                        camera_matrix,
+                        dist_coeffs,
+                        flags=cv2.SOLVEPNP_SQPNP
+                    )
                     
+
+                if success:
+                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any():
+                        success = False
+                        last_rvec, last_tvec = None, None # Reset for next frame
+                        continue
+                    else:
+                        # 4. Refine with VVS (Smoother than LM)
+                        rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
+                        last_rvec, last_tvec = rvec, tvec
+                
                     marker_data = {
                         "id": int(ids[0][0]),
                         "tvec": tvec.flatten().tolist(),
@@ -152,8 +339,8 @@ def process_image_thread():
                     # Put message in send queue
                     send_queue.put(json_send_message.encode('utf-8'))
                     
-            except Exception as e:
-                print(f"Error decoding raw image data: {e}")
+        except Exception as e:
+            print(f"Error decoding raw image data: {e}")
     
     # --- Business Logic: Enqueue a response if needed ---
     # Example: Echo the message back or send a canned response
@@ -164,7 +351,8 @@ def receiver_thread(client_socket, addr):
     """Continuously receives data from the client."""
     print(f"Receiver started for {addr}")
     global camera_matrix
-    
+    global running
+
     # --- INTRINSICS PHASE ---
     try:
         # Unity sends "fx,fy,cx,cy" as a raw UTF8 string first
@@ -172,6 +360,9 @@ def receiver_thread(client_socket, addr):
         if handshake_data:
             vals = [float(x) for x in handshake_data.split(',')]
             camera_matrix = scale_camera_matrix(vals)
+            # e.g., [[428.43286   0.      319.94586]
+                   # [  0.      428.43286 320.6509 ]
+                   # [  0.        0.        1.     ]]
             print(f"camera intrinsics received:\n{camera_matrix}")
             # Send confirmation back so Unity starts streaming images
             send_queue.put("HANDSHAKE_OK\n".encode('utf-8'))
@@ -180,7 +371,7 @@ def receiver_thread(client_socket, addr):
         return
     
     # --- IMAGE RECEIVING PHASE ---
-    while True:
+    while running:
         try:
             # print("Waiting to receive length...")
 
@@ -191,7 +382,6 @@ def receiver_thread(client_socket, addr):
 
                 if not remaining:
                     print("connection closed by client during length reception")
-                    sys.exit()
                     break
 
                 length += remaining
@@ -219,27 +409,36 @@ def receiver_thread(client_socket, addr):
             else:
                 latest_image_buffer.append(image)
             
-        except ConnectionResetError:
+        except (ConnectionResetError, BrokenPipeError):
+            print("Client disconnected.")
             break
+
         except Exception as e:
             print(f"Receiver error: {e}")
             break
     
     print(f"Receiver for {addr} closing.")
-    # In a real app, you'd signal the sender thread to stop here
 
 def sender_thread(client_socket, addr):
     """Continuously sends data waiting in the queue to the client."""
     print(f"Sender started for {addr}")
-    while True:
+
+    global running
+
+    while running:
         try:
             # Blocks until an item is available in the queue
             data_to_send = send_queue.get() 
             client_socket.sendall(data_to_send)
             send_queue.task_done()
             
-        except BrokenPipeError:
+        except queue.Empty:
+            continue
+            
+        except (BrokenPipeError, ConnectionResetError):
+            print("Client disconnected (pipe broken).")
             break
+        
         except Exception as e:
             print(f"Sender error: {e}")
             break
@@ -285,10 +484,22 @@ server_socket.bind((host, port))
 server_socket.listen(5)
 print('Server is listening on port %s...' % port)
 
-while True:
-    # Accept a connection
-    client_socket, addr = server_socket.accept()
+try:
+    while running:
+        try:
+            # Accept a connection
+            client_socket, addr = server_socket.accept()
 
-    # Create a new thread to handle the client
-    client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-    client_thread.start()
+            # Create a new thread to handle the client
+            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True)
+            client_thread.start()
+
+        except socket.timeout:
+            continue
+
+except Exception as e:
+    print(f"program ended: {e}")
+    running = False
+
+finally:
+    server_socket.close()
