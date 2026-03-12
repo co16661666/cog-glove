@@ -200,25 +200,28 @@ dist_coeffs = np.zeros((4, 1))
 
 # Image receive resolution
 # RECEIVE_RESOLUTION = (640.0, 640.0)
-RECEIVE_RESOLUTION = (1280.0, 1280.0)
+INTRINSICS_RESOLUTION = (1280.0, 1280.0)
 
 MANUAL_FOCAL_LENGTH_ADJUST = 1.00
 
 def scale_camera_matrix(vals):
     # vals = [fx, fy, cx, cy, orig_w, orig_h]
-    # We ignore vals[4] and [5] because the Quest reported 800,600 (incorrectly)
-    s = RECEIVE_RESOLUTION[0] / vals[4]
+    print(f"Intrinsics: fx={vals[0]}, fy={vals[1]}, cx={vals[2]}, cy={vals[3]}, orig_w={vals[4]}, orig_h={vals[5]}")
+    print(INTRINSICS_RESOLUTION[0], INTRINSICS_RESOLUTION[1])
+    
+    sx = vals[4] / INTRINSICS_RESOLUTION[0]
+    sy = vals[5] / INTRINSICS_RESOLUTION[1]
     
     # IMPORTANT: Use the SAME scale for Focal Length to keep the 3D math uniform
-    fx_scaled = vals[0] * s
-    fy_scaled = vals[1] * s # Use sx here too! 
+    fx_scaled = vals[0] * sx
+    fy_scaled = vals[1] * sy
     
     # Principal Point Scaling
     # If Unity is stretching the image to 800x600:
-    cx_scaled = vals[2] * s
-    cy_scaled = vals[3] * s
+    cx_scaled = vals[2] * sx
+    cy_scaled = vals[3] * sy
     
-    print(f"Scale: {s}, Scaled CX: {cx_scaled}, CY: {cy_scaled}")
+    print(f"Scale x: {sx}, Scale y: {sy}, Scaled CX: {cx_scaled}, CY: {cy_scaled}")
 
     return np.array([
         [fx_scaled, 0,         cx_scaled],
@@ -247,13 +250,16 @@ def process_image_thread():
 
         try:
             # Reshape the raw byte array into a NumPy array
-            np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
+            # np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
             
             # Reshape the 1D array into the image dimensions (H, W, Channels)
             # Note: If client uses Color32 (RGBA), channels=4. 
             # If client uses RGB24, channels=3.
-            img = cv2.imdecode(np_arr, 1)
+            # img = cv2.imdecode(np_arr, 1)
 
+            img = np.frombuffer(latest_image_buffer.pop(), np.uint8).reshape((640, 640)) #TODO: Make resolution dynamic based on handshake intrinsics
+            img = img = cv2.flip(img, 0)
+            
             if img is None:
                 print("Failed to decode image")
                 continue
@@ -267,9 +273,10 @@ def process_image_thread():
                     image_save_counter += 1
             
             # Convert to grayscale
-            grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            result = getCorners(grayscale)
+            # result = getCorners(grayscale)
+            result = getCorners(img)
 
             # Make sure OpenCV result is valid
             if not result or len(result) == 0:
@@ -296,15 +303,38 @@ def process_image_thread():
                 obj_points = np.array(obj_points, dtype=np.float32)
                 image_points = np.array(image_points, dtype=np.float32)
                 
+                # if last_rvec is not None and last_tvec is not None:
+                #     success, rvec, tvec = cv2.solvePnP(
+                #         obj_points, 
+                #         image_points, 
+                #         camera_matrix, 
+                #         dist_coeffs, 
+                #         rvec=last_rvec, 
+                #         tvec=last_tvec, 
+                #         useExtrinsicGuess=True, 
+                #         flags=cv2.SOLVEPNP_ITERATIVE
+                #     )
+                # else:
+                #     success, rvec, tvec = cv2.solvePnP(
+                #         obj_points,
+                #         image_points,
+                #         camera_matrix,
+                #         dist_coeffs,
+                #         flags=cv2.SOLVEPNP_SQPNP
+                #     )
+
                 if last_rvec is not None and last_tvec is not None:
-                    success, rvec, tvec = cv2.solvePnP(
+                    success, rvec, tvec, inliers = cv2.solvePnPRansac(
                         obj_points, 
                         image_points, 
                         camera_matrix, 
                         dist_coeffs, 
                         rvec=last_rvec, 
                         tvec=last_tvec, 
-                        useExtrinsicGuess=True, 
+                        useExtrinsicGuess=True,
+                        iterationsCount=100,
+                        reprojectionError=2.0,
+                        confidence=0.95,
                         flags=cv2.SOLVEPNP_ITERATIVE
                     )
                 else:
@@ -319,6 +349,7 @@ def process_image_thread():
 
                 if success:
                     if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any():
+                        print("Pose estimation failed")
                         success = False
                         last_rvec, last_tvec = None, None # Reset for next frame
                         continue
