@@ -386,6 +386,18 @@ def receiver_thread(client_socket, addr):
 
                 length += remaining
 
+            timestamp = b''
+            while len(timestamp) < 8:
+                remaining = client_socket.recv(8 - len(timestamp))
+
+                if not remaining:
+                    print("connection closed by client during timestamp reception")
+                    break
+
+                timestamp += remaining
+            
+            print(int.from_bytes(timestamp, byteorder='big'))
+
             # print(f"Received length bytes from {str(addr)}: {length}")
 
             image_size = int.from_bytes(length, byteorder='big')
