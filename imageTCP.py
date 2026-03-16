@@ -348,7 +348,7 @@ def process_image_thread():
                     
 
                 if success:
-                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any():
+                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any() or tvec[2] < 0:
                         print("Pose estimation failed")
                         success = False
                         last_rvec, last_tvec = None, None # Reset for next frame
