@@ -10,6 +10,8 @@ import numpy as np
 
 import json
 import time
+import csv
+from datetime import datetime
 
 from markerDetector import getCorners
 
@@ -21,6 +23,9 @@ send_queue = queue.Queue()
 
 # Buffer to hold lastest image, deque to automatically discard old images
 latest_image_buffer = deque(maxlen=1)
+
+# Buffer to hold latest timestamp
+latest_timestamp = 0
 
 # Counter for saving images
 image_save_counter = 0
@@ -237,9 +242,19 @@ def scale_camera_matrix(vals):
 def process_image_thread():
     global camera_matrix
     global image_save_counter
+    global latest_timestamp
 
     last_rvec = None
     last_tvec = None
+    
+    # Initialize CSV logging
+    timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    csv_filename = f"pose_log_{timestamp_str}.csv"
+    csv_file = open(csv_filename, 'w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(['timestamp', 'rvec_x', 'rvec_y', 'rvec_z', 'tvec_x', 'tvec_y', 'tvec_z', 'pose_success'])
+    csv_file.flush()
+    print(f"CSV logging initialized: {csv_filename}")
     
     # Display image
     while running:
@@ -299,6 +314,11 @@ def process_image_thread():
 
             marker_data = {}
             
+            # Initialize logging variables
+            pose_success = False
+            rvec_values = ['', '', '']
+            tvec_values = ['', '', '']
+            
             if len(ids) > 0:
                 obj_points = np.array(obj_points, dtype=np.float32)
                 image_points = np.array(image_points, dtype=np.float32)
@@ -348,30 +368,45 @@ def process_image_thread():
                     
 
                 if success:
-                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any():
+                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any() or tvec[2] < 0:
                         print("Pose estimation failed")
                         success = False
                         last_rvec, last_tvec = None, None # Reset for next frame
-                        continue
                     else:
                         # 4. Refine with VVS (Smoother than LM)
                         rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                         last_rvec, last_tvec = rvec, tvec
+                        
+                        # Mark as successful and store values for CSV logging
+                        pose_success = True
+                        rvec_values = rvec.flatten().tolist()
+                        tvec_values = tvec.flatten().tolist()
                 
-                    marker_data = {
-                        "id": int(ids[0][0]),
-                        "tvec": tvec.flatten().tolist(),
-                        "rvec": rvec.flatten().tolist()
-                    }
+                        marker_data = {
+                            "id": int(ids[0][0]),
+                            "tvec": tvec_values,
+                            "rvec": rvec_values
+                        }
 
-                    # print("JSON: ", json.dumps(corners_list))
-                    # Convert to JSON for sending
-                    json_send_message = json.dumps(marker_data) + '\n'
-                    # Put message in send queue
-                    send_queue.put(json_send_message.encode('utf-8'))
+                        # print("JSON: ", json.dumps(corners_list))
+                        # Convert to JSON for sending
+                        json_send_message = json.dumps(marker_data) + '\n'
+                        # Put message in send queue
+                        send_queue.put(json_send_message.encode('utf-8'))
+            
+            # Write CSV row with timestamp and pose data
+            csv_writer.writerow([latest_timestamp, rvec_values[0], rvec_values[1], rvec_values[2], tvec_values[0], tvec_values[1], tvec_values[2], pose_success])
+            csv_file.flush()
                     
         except Exception as e:
             print(f"Error decoding raw image data: {e}")
+    
+    # Close CSV file on thread exit
+    try:
+        csv_file.close()
+        print(f"CSV file {csv_filename} closed successfully")
+    except Exception as e:
+        print(f"Error closing CSV file: {e}")
     
     # --- Business Logic: Enqueue a response if needed ---
     # Example: Echo the message back or send a canned response
@@ -383,6 +418,7 @@ def receiver_thread(client_socket, addr):
     print(f"Receiver started for {addr}")
     global camera_matrix
     global running
+    global latest_timestamp
 
     # --- INTRINSICS PHASE ---
     try:
@@ -427,7 +463,7 @@ def receiver_thread(client_socket, addr):
 
                 timestamp += remaining
             
-            print(int.from_bytes(timestamp, byteorder='big'))
+            timestamp = int.from_bytes(timestamp, byteorder='big')
 
             # print(f"Received length bytes from {str(addr)}: {length}")
 
@@ -445,6 +481,9 @@ def receiver_thread(client_socket, addr):
                 image += chunk
 
             # print(f"Received from {str(addr)} image size {image_size} bytes")
+
+            # Store timestamp globally
+            latest_timestamp = timestamp
 
             # If buffer is not empty, replace old data; otherwise, append new data
             if len(latest_image_buffer) > 0:
