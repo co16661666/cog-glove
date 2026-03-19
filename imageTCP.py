@@ -1,12 +1,16 @@
 import sys
+import traceback
 
 from collections import deque
 import socket
 import threading
 import queue
 
+import matlab
+import OpenCV_ESEKF
 import cv2
 import numpy as np
+import scipy.spatial.transform
 
 import json
 import time
@@ -26,6 +30,14 @@ latest_image_buffer = deque(maxlen=1)
 
 # Buffer to hold latest timestamp
 latest_timestamp = 0
+previous_timestamp = 0
+
+# Initialise Kalman Filter
+try:
+    my_OpenCV_ESEKF = OpenCV_ESEKF.initialize()
+except Exception as e:
+    print('Error initializing OpenCV_ESEKF package\n:{}'.format(e))
+    exit(1)
 
 # Counter for saving images
 image_save_counter = 0
@@ -243,19 +255,41 @@ def process_image_thread():
     global camera_matrix
     global image_save_counter
     global latest_timestamp
+    global previous_timestamp
 
     last_rvec = None
     last_tvec = None
+    inliers = None
     
     # Initialize CSV logging
     timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     csv_filename = f"pose_log_{timestamp_str}.csv"
     csv_file = open(csv_filename, 'w', newline='')
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['timestamp', 'rvec_x', 'rvec_y', 'rvec_z', 'tvec_x', 'tvec_y', 'tvec_z', 'pose_success'])
+    csv_writer.writerow(['timestamp', 'raw_rvec_x', 'raw_rvec_y', 'raw_rvec_z', 'raw_tvec_x', 'raw_tvec_y', 'raw_tvec_z', 'filtered_rvec_x', 'filtered_rvec_y', 'filtered_rvec_z', 'filtered_tvec_x', 'filtered_tvec_y', 'filtered_tvec_z', 'pose_success'])
     csv_file.flush()
     print(f"CSV logging initialized: {csv_filename}")
     
+    # Initialize Kalman filter variables
+    try:
+        x = np.zeros((16, 1), dtype=np.double)
+        x[9, 0] = 1
+
+        sigma_acc =  np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
+        sigma_gyro = np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
+        Q = matlab.double(np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2))))
+        
+        pos_var = np.array([1.22391E-6, 1.17971E-5, 1.58299E-6], dtype=np.double)
+        rot_var = np.array([2.88982E-5, 1.07223E-4, 7.11196E-5], dtype=np.double)
+        R = matlab.double(np.diag(np.concatenate((pos_var, rot_var))))
+
+        P = matlab.double(np.eye(15, dtype=np.double) * 0.5)
+
+        dt = matlab.double(np.array([0], dtype=np.double))
+    except Exception as e:
+        print('Error initializing Kalman filter variables\n:{}'.format(e))
+        exit(1)
+
     # Display image
     while running:
         # Check if image is in buffer
@@ -316,8 +350,10 @@ def process_image_thread():
             
             # Initialize logging variables
             pose_success = False
-            rvec_values = ['', '', '']
-            tvec_values = ['', '', '']
+            raw_rvec_values = ['', '', '']
+            raw_tvec_values = ['', '', '']
+            filtered_rvec_values = ['', '', '']
+            filtered_tvec_values = ['', '', '']
             
             if len(ids) > 0:
                 obj_points = np.array(obj_points, dtype=np.float32)
@@ -353,7 +389,7 @@ def process_image_thread():
                         tvec=last_tvec, 
                         useExtrinsicGuess=True,
                         iterationsCount=100,
-                        reprojectionError=2.0,
+                        reprojectionError=1.5,
                         confidence=0.95,
                         flags=cv2.SOLVEPNP_ITERATIVE
                     )
@@ -372,21 +408,84 @@ def process_image_thread():
                         print("Pose estimation failed")
                         success = False
                         last_rvec, last_tvec = None, None # Reset for next frame
+
+                        x = np.zeros((16, 1), dtype=np.double)
+                        x[10, 0] = 1
+                        P = matlab.double(np.eye(15, dtype=np.double) * 0.5)
+                        continue
                     else:
                         # 4. Refine with VVS (Smoother than LM)
-                        rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
-                        last_rvec, last_tvec = rvec, tvec
+                        if inliers is not None and len(inliers) > 0:
+                            obj_points_inliers = obj_points[inliers.flatten().astype(int)]
+                            image_points_inliers = image_points[inliers.flatten().astype(int)]
+                        else:
+                            obj_points_inliers = obj_points
+                            image_points_inliers = image_points
+
+                        rvec, tvec = cv2.solvePnPRefineVVS(obj_points_inliers, image_points_inliers, camera_matrix, dist_coeffs, rvec, tvec)
+                        rvec_raw = rvec.copy()
+                        tvec_raw = tvec.copy()
                         
-                        # Mark as successful and store values for CSV logging
+                        # Store raw values for CSV logging
+                        raw_rvec_values = rvec_raw.flatten().tolist()
+                        raw_tvec_values = tvec_raw.flatten().tolist()
+                        
+                        # Kalman Filter Predict
+                        if (latest_timestamp - previous_timestamp) > 0:
+                            dt = matlab.double(np.array([(latest_timestamp - previous_timestamp) * 1E-9], dtype=np.double))
+                        else:
+                            dt = matlab.double(np.array([0.033], dtype=np.double))
+                        
+                        x_hat, P_hat = my_OpenCV_ESEKF.predict(x, Q, P, dt, nargout=2)
+
+                        # Kalman Filter Update
+                        y_k = matlab.double(np.concatenate((tvec.flatten(), rvec.flatten())).reshape((6, 1)))
+                        x_lab, dx_lab, P_lab = my_OpenCV_ESEKF.update(x_hat, P_hat, R, y_k, nargout=3)
+                        x = np.array(x_lab)
+                        dx = np.array(dx_lab)
+
+                        # Symmetrize P to prevent numerical drift
+                        P_np = np.array(P_lab, dtype=np.double)
+                        P_np = (P_np + P_np.T) / 2.0
+
+                        # Add minimum variance floor to diagonal (prevents P collapsing to zero)
+                        P_np += np.eye(15) * 1e-9
+
+                        # Detect divergence before it causes MATLAB warnings
+                        if np.linalg.cond(P_np) > 1e15:
+                            print("WARNING: P is ill-conditioned, resetting filter state")
+                            x = np.zeros((16, 1), dtype=np.double)
+                            x[9, 0] = 1
+                            P = matlab.double((np.eye(15) * 0.5).tolist())
+                            last_rvec, last_tvec = None, None
+                            previous_timestamp = latest_timestamp
+                            continue
+
+                        P = matlab.double(P_np.tolist())
+
+                        x_forward, * = my_OpenCV_ESEKF.update(x, Q, P, dt, nargout=2)
+
+                        rotation = scipy.spatial.transform.Rotation.from_quat([x[9, 0], x[10, 0], x[11, 0], x[12, 0]], scalar_first=True)
+                        rvec = rotation.as_rotvec().flatten()
+
+                        translation = x[0:3, 0]
+                        tvec = translation.reshape((3, 1)).flatten()
+
+                        last_rvec, last_tvec = rvec, tvec
+
+                        # Mark as successful and store filtered values for CSV logging
                         pose_success = True
-                        rvec_values = rvec.flatten().tolist()
-                        tvec_values = tvec.flatten().tolist()
-                
+                        filtered_rvec_values = rvec.tolist()
+                        filtered_tvec_values = tvec.tolist()
+
                         marker_data = {
                             "id": int(ids[0][0]),
-                            "tvec": tvec_values,
-                            "rvec": rvec_values
+                            "tvec": filtered_tvec_values,
+                            "rvec": filtered_rvec_values
                         }
+
+                        rvec_kalman = rotation.as_rotvec().flatten()
+                        print(f"Raw rvec: {rvec_raw.flatten()}, Kalman rvec: {rvec_kalman}")
 
                         # print("JSON: ", json.dumps(corners_list))
                         # Convert to JSON for sending
@@ -394,12 +493,15 @@ def process_image_thread():
                         # Put message in send queue
                         send_queue.put(json_send_message.encode('utf-8'))
             
-            # Write CSV row with timestamp and pose data
-            csv_writer.writerow([latest_timestamp, rvec_values[0], rvec_values[1], rvec_values[2], tvec_values[0], tvec_values[1], tvec_values[2], pose_success])
+            # Write CSV row with timestamp, raw data, filtered data, and pose success flag
+            csv_writer.writerow([latest_timestamp, raw_rvec_values[0], raw_rvec_values[1], raw_rvec_values[2], raw_tvec_values[0], raw_tvec_values[1], raw_tvec_values[2], filtered_rvec_values[0], filtered_rvec_values[1], filtered_rvec_values[2], filtered_tvec_values[0], filtered_tvec_values[1], filtered_tvec_values[2], pose_success])
             csv_file.flush()
+
+            previous_timestamp = latest_timestamp
                     
         except Exception as e:
             print(f"Error decoding raw image data: {e}")
+            traceback.print_exc()
     
     # Close CSV file on thread exit
     try:
