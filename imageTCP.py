@@ -259,6 +259,7 @@ def process_image_thread():
 
     last_rvec = None
     last_tvec = None
+    last_point_count = None
     inliers = None
     
     # Initialize CSV logging
@@ -275,12 +276,14 @@ def process_image_thread():
         x = np.zeros((16, 1), dtype=np.double)
         x[9, 0] = 1
 
+        x_forward = x.copy()
+
         sigma_acc =  np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
-        sigma_gyro = np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
+        sigma_gyro = np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
         Q = matlab.double(np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2))))
         
-        pos_var = np.array([1.22391E-6, 1.17971E-5, 1.58299E-6], dtype=np.double)
-        rot_var = np.array([2.88982E-5, 1.07223E-4, 7.11196E-5], dtype=np.double)
+        pos_var = np.array([8.82E-6, 4.52E-6, 1.47E-6], dtype=np.double)
+        rot_var = np.array([8.68E-5, 1.04E-4, 3.47E-4], dtype=np.double)
         R = matlab.double(np.diag(np.concatenate((pos_var, rot_var))))
 
         P = matlab.double(np.eye(15, dtype=np.double) * 0.5)
@@ -379,7 +382,7 @@ def process_image_thread():
                 #         flags=cv2.SOLVEPNP_SQPNP
                 #     )
 
-                if last_rvec is not None and last_tvec is not None:
+                if last_rvec is not None and last_tvec is not None and last_point_count == len(obj_points):
                     success, rvec, tvec, inliers = cv2.solvePnPRansac(
                         obj_points, 
                         image_points, 
@@ -401,6 +404,8 @@ def process_image_thread():
                         dist_coeffs,
                         flags=cv2.SOLVEPNP_SQPNP
                     )
+
+                    inliers = None
                     
 
                 if success:
@@ -463,8 +468,6 @@ def process_image_thread():
 
                         P = matlab.double(P_np.tolist())
 
-                        x_forward, * = my_OpenCV_ESEKF.update(x, Q, P, dt, nargout=2)
-
                         rotation = scipy.spatial.transform.Rotation.from_quat([x[9, 0], x[10, 0], x[11, 0], x[12, 0]], scalar_first=True)
                         rvec = rotation.as_rotvec().flatten()
 
@@ -472,11 +475,29 @@ def process_image_thread():
                         tvec = translation.reshape((3, 1)).flatten()
 
                         last_rvec, last_tvec = rvec, tvec
+                        
+                        # Forward projection
+                        # Measure latency
+                        t_now_ns = time.time_ns()
+                        pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
+
+                        # Prevent extreme values
+                        pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
+
+                        dt_forward = matlab.double(np.array([pipeline_latency_s * 0.25], dtype=np.double))
+                        x_forward, *other = my_OpenCV_ESEKF.predict(x, Q, P, dt_forward, nargout=2)
+                        x_forward = np.array(x_forward)
+
+                        rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
+                        rvec_forward = rotation_forward.as_rotvec().flatten()
+
+                        translation_forward = x_forward[0:3, 0]
+                        tvec_forward = translation_forward.reshape((3, 1)).flatten()
 
                         # Mark as successful and store filtered values for CSV logging
                         pose_success = True
-                        filtered_rvec_values = rvec.tolist()
-                        filtered_tvec_values = tvec.tolist()
+                        filtered_rvec_values = rvec_forward.tolist()
+                        filtered_tvec_values = tvec_forward.tolist()
 
                         marker_data = {
                             "id": int(ids[0][0]),
