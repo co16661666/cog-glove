@@ -20,7 +20,7 @@ class OpenCV_KF:
         # Rotation
         q_k = Rot.from_quat([self.x_k[9, 0], self.x_k[10, 0], self.x_k[11, 0], self.x_k[12, 0]], scalar_first=True)
         wt = Rot.from_rotvec(self.x_k[13:16, 0] * dt)
-        rotation = Rot.as_quat(wt * q_k, scalar_first=True)
+        rotation = (wt * q_k).as_quat(scalar_first=True)
         self.x_k[9:13, 0] = [rotation[0], rotation[1], rotation[2], rotation[3]]
         # self.x_k[13:16, 0] = self.x_k[13:16, 0]
 
@@ -40,9 +40,9 @@ class OpenCV_KF:
 
         # Predicted error update
         Q_k = self.Q * dt
-        self.P_k = F_k @ self.P_k @ np.transpose(F_k) + L_k @ Q_k @ np.transpose(L_k)
+        self.P_k = F_k @ self.P_k @ F_k.T + L_k @ Q_k @ L_k.T
 
-    # ========== PREDICTION STEP ==========
+    # ========== UPDATE STEP ==========
     def update(self, y_k):
         # Define H matrix
         H_k = np.zeros((6, 15))
@@ -53,29 +53,29 @@ class OpenCV_KF:
         R_k = self.R
 
         # Calculate Kalman gain
-        S = (H_k @ self.P_k @ np.transpose(H_k) + R_k)
-        K_k = self.P_k @ np.transpose(H_k) @ np.linalg.inv(S)
+        S = (H_k @ self.P_k @ H_k.T + R_k)
+        K_k = self.P_k @ H_k.T @ np.linalg.inv(S)
 
-        # Calculate difference between measured and predicted
+        # Calculate difference between measured and predicted (residual)
         z_k = np.zeros((6, 1))
         z_k[0:3, 0] = y_k[0:3, 0] - self.x_k[0:3, 0]
         
         rot_y = Rot.from_rotvec([y_k[3, 0], y_k[4, 0], y_k[5, 0]])
         rot_k = Rot.from_quat([self.x_k[9, 0], self.x_k[10, 0], self.x_k[11, 0], self.x_k[12, 0]], scalar_first=True)
-        z_k[3:6, 0] = np.transpose((rot_y * rot_k.inv()).as_rotvec())
+        z_k[3:6, 0] = (rot_y * rot_k.inv()).as_rotvec().T
 
         # Update error state
         self.dx_k = K_k @ z_k
 
         # Update state error
-        self.P_k = (np.eye(15, 15) - K_k @ H_k) @ self.P_k @ np.transpose(np.eye(15, 15) - K_k @ H_k) + K_k @ R_k @ np.transpose(K_k)
+        self.P_k = (np.eye(15, 15) - K_k @ H_k) @ self.P_k @ (np.eye(15, 15) - K_k @ H_k).T + K_k @ R_k @ K_k.T
 
         # Update state vector
         self.x_k[0:9, 0] = self.x_k[0:9, 0] + self.dx_k[0:9, 0]
 
         q_k = Rot.from_quat([self.x_k[9, 0], self.x_k[10, 0], self.x_k[11, 0], self.x_k[12, 0]], scalar_first=True)
         dq = Rot.from_rotvec([self.dx_k[9, 0], self.dx_k[10, 0], self.dx_k[11, 0]])
-        self.x_k[9:13, 0] = np.transpose((dq * q_k).as_quat(scalar_first=True))
+        self.x_k[9:13, 0] = (dq * q_k).as_quat(scalar_first=True).T
 
         self.x_k[13:16, 0] = self.x_k[13:16, 0] + self.dx_k[12:15, 0]
         # rvec = rotation.as_rotvec().flatten()
