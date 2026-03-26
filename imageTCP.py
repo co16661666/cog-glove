@@ -6,8 +6,7 @@ import socket
 import threading
 import queue
 
-import matlab
-import OpenCV_ESEKF
+from OpenCV_KF import OpenCV_KF
 import cv2
 import numpy as np
 import scipy.spatial.transform
@@ -32,12 +31,6 @@ latest_image_buffer = deque(maxlen=1)
 latest_timestamp = 0
 previous_timestamp = 0
 
-# Initialise Kalman Filter
-try:
-    my_OpenCV_ESEKF = OpenCV_ESEKF.initialize()
-except Exception as e:
-    print('Error initializing OpenCV_ESEKF package\n:{}'.format(e))
-    exit(1)
 
 # Counter for saving images
 image_save_counter = 0
@@ -271,27 +264,27 @@ def process_image_thread():
     csv_file.flush()
     print(f"CSV logging initialized: {csv_filename}")
     
-    # Initialize Kalman filter variables
-    try:
-        x = np.zeros((16, 1), dtype=np.double)
-        x[9, 0] = 1
+    # Initialize Kalman filter
+    x = np.zeros((16, 1), dtype=np.double)
+    x[9, 0] = 1
 
-        x_forward = x.copy()
+    dx_k = np.zeros((15, 1), dtype=np.double)
 
-        sigma_acc =  np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
-        sigma_gyro = np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
-        Q = matlab.double(np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2))))
-        
-        pos_var = np.array([8.82E-6, 4.52E-6, 1.47E-6], dtype=np.double)
-        rot_var = np.array([8.68E-5, 1.04E-4, 3.47E-4], dtype=np.double)
-        R = matlab.double(np.diag(np.concatenate((pos_var, rot_var))))
+    x_forward = x.copy()
 
-        P = matlab.double(np.eye(15, dtype=np.double) * 0.5)
+    sigma_acc =  np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
+    sigma_gyro = np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
+    Q = np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2)))
+    
+    pos_var = np.array([8.82E-6, 4.52E-6, 1.47E-6], dtype=np.double)
+    rot_var = np.array([8.68E-5, 1.04E-4, 3.47E-4], dtype=np.double)
+    R = np.diag(np.concatenate((pos_var, rot_var)))
 
-        dt = matlab.double(np.array([0], dtype=np.double))
-    except Exception as e:
-        print('Error initializing Kalman filter variables\n:{}'.format(e))
-        exit(1)
+    P = np.eye(15, dtype=np.double) * 0.5
+
+    kf = OpenCV_KF(x, dx_k, P, Q, R)
+
+    dt = np.array([0], dtype=np.double)
 
     # Display image
     while running:
@@ -416,7 +409,7 @@ def process_image_thread():
 
                         x = np.zeros((16, 1), dtype=np.double)
                         x[10, 0] = 1
-                        P = matlab.double(np.eye(15, dtype=np.double) * 0.5)
+                        P = np.eye(15, dtype=np.double) * 0.5
                         continue
                     else:
                         # 4. Refine with VVS (Smoother than LM)
@@ -437,36 +430,34 @@ def process_image_thread():
                         
                         # Kalman Filter Predict
                         if (latest_timestamp - previous_timestamp) > 0:
-                            dt = matlab.double(np.array([(latest_timestamp - previous_timestamp) * 1E-9], dtype=np.double))
+                            dt = (latest_timestamp - previous_timestamp) * 1E-9 # Nanoseconds to seconds
                         else:
-                            dt = matlab.double(np.array([0.033], dtype=np.double))
+                            dt = 0.033
                         
-                        x_hat, P_hat = my_OpenCV_ESEKF.predict(x, Q, P, dt, nargout=2)
+                        kf.predict(dt)
 
                         # Kalman Filter Update
-                        y_k = matlab.double(np.concatenate((tvec.flatten(), rvec.flatten())).reshape((6, 1)))
-                        x_lab, dx_lab, P_lab = my_OpenCV_ESEKF.update(x_hat, P_hat, R, y_k, nargout=3)
-                        x = np.array(x_lab)
-                        dx = np.array(dx_lab)
+                        y_k = np.concatenate((tvec.flatten(), rvec.flatten())).reshape((6, 1))
+                        kf.update(y_k)
+                        x = kf.x_k
+                        dx = kf.dx_k
 
                         # Symmetrize P to prevent numerical drift
-                        P_np = np.array(P_lab, dtype=np.double)
-                        P_np = (P_np + P_np.T) / 2.0
+                        P = kf.P_k
+                        P = (P + P.T) / 2.0
 
                         # Add minimum variance floor to diagonal (prevents P collapsing to zero)
-                        P_np += np.eye(15) * 1e-9
+                        P += np.eye(15) * 1e-9
 
                         # Detect divergence before it causes MATLAB warnings
-                        if np.linalg.cond(P_np) > 1e15:
+                        if np.linalg.cond(P) > 1e15:
                             print("WARNING: P is ill-conditioned, resetting filter state")
                             x = np.zeros((16, 1), dtype=np.double)
                             x[9, 0] = 1
-                            P = matlab.double((np.eye(15) * 0.5).tolist())
+                            P = np.eye(15) * 0.5
                             last_rvec, last_tvec = None, None
                             previous_timestamp = latest_timestamp
                             continue
-
-                        P = matlab.double(P_np.tolist())
 
                         rotation = scipy.spatial.transform.Rotation.from_quat([x[9, 0], x[10, 0], x[11, 0], x[12, 0]], scalar_first=True)
                         rvec = rotation.as_rotvec().flatten()
@@ -476,28 +467,28 @@ def process_image_thread():
 
                         last_rvec, last_tvec = rvec, tvec
                         
-                        # Forward projection
-                        # Measure latency
-                        t_now_ns = time.time_ns()
-                        pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
+                        # # Forward projection
+                        # # Measure latency
+                        # t_now_ns = time.time_ns()
+                        # pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
 
-                        # Prevent extreme values
-                        pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
+                        # # Prevent extreme values
+                        # pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
 
-                        dt_forward = matlab.double(np.array([pipeline_latency_s * 0.25], dtype=np.double))
-                        x_forward, *other = my_OpenCV_ESEKF.predict(x, Q, P, dt_forward, nargout=2)
-                        x_forward = np.array(x_forward)
+                        # dt_forward = pipeline_latency_s * 0.25
+                        # x_forward, *other = my_OpenCV_ESEKF.predict(x, Q, P, dt_forward, nargout=2)
+                        # x_forward = np.array(x_forward)
 
-                        rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
-                        rvec_forward = rotation_forward.as_rotvec().flatten()
+                        # rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
+                        # rvec_forward = rotation_forward.as_rotvec().flatten()
 
-                        translation_forward = x_forward[0:3, 0]
-                        tvec_forward = translation_forward.reshape((3, 1)).flatten()
+                        # translation_forward = x_forward[0:3, 0]
+                        # tvec_forward = translation_forward.reshape((3, 1)).flatten()
 
                         # Mark as successful and store filtered values for CSV logging
                         pose_success = True
-                        filtered_rvec_values = rvec_forward.tolist()
-                        filtered_tvec_values = tvec_forward.tolist()
+                        filtered_rvec_values = rvec.tolist()
+                        filtered_tvec_values = tvec.tolist()
 
                         marker_data = {
                             "id": int(ids[0][0]),
