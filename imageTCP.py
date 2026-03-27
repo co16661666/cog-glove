@@ -274,8 +274,8 @@ def process_image_thread():
 
     x_forward = x.copy()
 
-    sigma_acc =  np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
-    sigma_gyro = np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
+    sigma_acc =  np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
+    sigma_gyro = np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
     Q = np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2)))
     
     pos_var = np.array([8.82E-6, 4.52E-6, 1.47E-6], dtype=np.double)
@@ -294,11 +294,14 @@ def process_image_thread():
 
     # Display image
     while running:
+        t_0_s = time.perf_counter()
+
         # Check if image is in buffer
         if len(latest_image_buffer) == 0:
             time.sleep(0.01) # Sleep 10ms to let other threads run
             continue
-
+        t_0_e = time.perf_counter()
+        
         try:
             # Reshape the raw byte array into a NumPy array
             # np_arr = np.frombuffer(latest_image_buffer.pop(), np.uint8)
@@ -307,7 +310,7 @@ def process_image_thread():
             # Note: If client uses Color32 (RGBA), channels=4. 
             # If client uses RGB24, channels=3.
             # img = cv2.imdecode(np_arr, 1)
-
+            t_1_s = time.perf_counter()
             img = np.frombuffer(latest_image_buffer.pop(), np.uint8).reshape((640, 640)) #TODO: Make resolution dynamic based on handshake intrinsics
             img = img = cv2.flip(img, 0)
             
@@ -315,6 +318,7 @@ def process_image_thread():
                 print("Failed to decode image")
                 continue
             
+            t_1_e = time.perf_counter()
             # Save first 20 images to JPG files
             with image_save_lock:
                 if image_save_counter < MAX_IMAGES_TO_SAVE:
@@ -327,8 +331,9 @@ def process_image_thread():
             # grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
             # result = getCorners(grayscale)
+            t_2_s = time.perf_counter()
             result = getCorners(img)
-
+            t_2_e = time.perf_counter()
             # Make sure OpenCV result is valid
             if not result or len(result) == 0:
                 continue
@@ -344,10 +349,11 @@ def process_image_thread():
             obj_points = []
             image_points = []
 
+            t_3_s = time.perf_counter()
             for i, id in enumerate(ids.flatten()):
                 obj_points.extend(tag_points_3D[id])
                 image_points.extend(corners[i].reshape(4, 2))
-
+            t_3_e = time.perf_counter()
             marker_data = {}
             
             # Initialize logging variables
@@ -358,28 +364,9 @@ def process_image_thread():
             filtered_tvec_values = ['', '', '']
             
             if len(ids) > 0:
+                t_4_s = time.perf_counter()
                 obj_points = np.array(obj_points, dtype=np.float32)
                 image_points = np.array(image_points, dtype=np.float32)
-                
-                # if last_rvec is not None and last_tvec is not None:
-                #     success, rvec, tvec = cv2.solvePnP(
-                #         obj_points, 
-                #         image_points, 
-                #         camera_matrix, 
-                #         dist_coeffs, 
-                #         rvec=last_rvec, 
-                #         tvec=last_tvec, 
-                #         useExtrinsicGuess=True, 
-                #         flags=cv2.SOLVEPNP_ITERATIVE
-                #     )
-                # else:
-                #     success, rvec, tvec = cv2.solvePnP(
-                #         obj_points,
-                #         image_points,
-                #         camera_matrix,
-                #         dist_coeffs,
-                #         flags=cv2.SOLVEPNP_SQPNP
-                #     )
 
                 if last_rvec is not None and last_tvec is not None and last_point_count == len(obj_points):
                     success, rvec, tvec, inliers = cv2.solvePnPRansac(
@@ -405,7 +392,7 @@ def process_image_thread():
                     )
 
                     inliers = None
-                    
+                t_4_e = time.perf_counter()
                 if success:
                     tvec_mag = np.linalg.norm(tvec)
                     rvec_mag = scipy.spatial.transform.Rotation.from_rotvec(rvec.flatten()).magnitude()
@@ -423,6 +410,7 @@ def process_image_thread():
                         P = np.eye(15, dtype=np.double) * 0.5
                         continue
                     else:
+                        t_5_s = time.perf_counter()
                         # 4. Refine with VVS (Smoother than LM)
                         if inliers is not None and len(inliers) > 0:
                             obj_points_inliers = obj_points[inliers.flatten().astype(int)]
@@ -438,7 +426,9 @@ def process_image_thread():
                         # Store raw values for CSV logging
                         raw_rvec_values = rvec_raw.flatten().tolist()
                         raw_tvec_values = tvec_raw.flatten().tolist()
+                        t_5_e = time.perf_counter()
                         
+                        t_6_s = time.perf_counter()
                         # Kalman Filter Predict
                         if (latest_timestamp - previous_timestamp) > 0:
                             dt = (latest_timestamp - previous_timestamp) * 1E-9 # Nanoseconds to seconds
@@ -480,7 +470,7 @@ def process_image_thread():
                         
                         # Forward projection
                         # Measure latency
-                        t_now_ns = time.time_ns()
+                        t_now_ns = time.time_ns() # TODO: Double check logic, likely different timers
                         pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
 
                         # Prevent extreme values
@@ -494,7 +484,9 @@ def process_image_thread():
 
                         translation_forward = x_forward[0:3, 0]
                         tvec_forward = translation_forward.reshape((3, 1)).flatten()
+                        t_6_e = time.perf_counter()
 
+                        t_7_s = time.perf_counter()
                         # Mark as successful and store filtered values for CSV logging
                         pose_success = True
                         filtered_rvec_values = rvec_forward.tolist()
@@ -507,13 +499,15 @@ def process_image_thread():
                         }
 
                         rvec_kalman = rotation.as_rotvec().flatten()
-                        print(f"Raw rvec: {rvec_raw.flatten()}, Kalman rvec: {rvec_kalman}")
 
                         # print("JSON: ", json.dumps(corners_list))
                         # Convert to JSON for sending
                         json_send_message = json.dumps(marker_data) + '\n'
                         # Put message in send queue
                         send_queue.put(json_send_message.encode('utf-8'))
+                        t_7_e = time.perf_counter()
+
+                        print(f"T1 (Image Decode): {t_1_e - t_1_s:.4f}s, T2 (Corner Detect): {t_2_e - t_2_s:.4f}s, T3 (PnP Prep): {t_3_e - t_3_s:.4f}s, T4 (PnP Solve): {t_4_e - t_4_s:.4f}s, T5 (VVS Refine): {t_5_e - t_5_s:.4f}s, T6 (KF): {t_6_e - t_6_s:.4f}s, Total: {(t_7_e - t_0_s):.4f}s")
             
             # Write CSV row with timestamp, raw data, filtered data, and pose success flag
             csv_writer.writerow([latest_timestamp, raw_rvec_values[0], raw_rvec_values[1], raw_rvec_values[2], raw_tvec_values[0], raw_tvec_values[1], raw_tvec_values[2], filtered_rvec_values[0], filtered_rvec_values[1], filtered_rvec_values[2], filtered_tvec_values[0], filtered_tvec_values[1], filtered_tvec_values[2], pose_success])
