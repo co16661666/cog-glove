@@ -12,6 +12,10 @@ import json
 import time
 
 from markerDetector import getCorners
+from classification.graspInference import GraspInference
+
+predictor = GraspInference()
+predictor.start()
 
 # Program running
 running = True
@@ -357,11 +361,14 @@ def process_image_thread():
                         # 4. Refine with VVS (Smoother than LM)
                         rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                         last_rvec, last_tvec = rvec, tvec
-                
+
+                    grasped = predictor.is_grasped()
+                    print(f"Grasped: {grasped}")
                     marker_data = {
                         "id": int(ids[0][0]),
                         "tvec": tvec.flatten().tolist(),
-                        "rvec": rvec.flatten().tolist()
+                        "rvec": rvec.flatten().tolist(),
+                        "grasped": grasped
                     }
 
                     # print("JSON: ", json.dumps(corners_list))
