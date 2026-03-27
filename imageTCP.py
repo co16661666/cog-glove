@@ -467,28 +467,27 @@ def process_image_thread():
 
                         last_rvec, last_tvec = rvec, tvec
                         
-                        # # Forward projection
-                        # # Measure latency
-                        # t_now_ns = time.time_ns()
-                        # pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
+                        # Forward projection
+                        # Measure latency
+                        t_now_ns = time.time_ns()
+                        pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
 
-                        # # Prevent extreme values
-                        # pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
+                        # Prevent extreme values
+                        pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
 
-                        # dt_forward = pipeline_latency_s * 0.25
-                        # x_forward, *other = my_OpenCV_ESEKF.predict(x, Q, P, dt_forward, nargout=2)
-                        # x_forward = np.array(x_forward)
+                        dt_forward = pipeline_latency_s * 0.25
+                        x_forward = kf.future_project(dt_forward)
 
-                        # rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
-                        # rvec_forward = rotation_forward.as_rotvec().flatten()
+                        rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
+                        rvec_forward = rotation_forward.as_rotvec().flatten()
 
-                        # translation_forward = x_forward[0:3, 0]
-                        # tvec_forward = translation_forward.reshape((3, 1)).flatten()
+                        translation_forward = x_forward[0:3, 0]
+                        tvec_forward = translation_forward.reshape((3, 1)).flatten()
 
                         # Mark as successful and store filtered values for CSV logging
                         pose_success = True
-                        filtered_rvec_values = rvec.tolist()
-                        filtered_tvec_values = tvec.tolist()
+                        filtered_rvec_values = rvec_forward.tolist()
+                        filtered_tvec_values = tvec_forward.tolist()
 
                         marker_data = {
                             "id": int(ids[0][0]),

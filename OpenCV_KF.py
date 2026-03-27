@@ -82,3 +82,19 @@ class OpenCV_KF:
 
         self.dx_k = np.zeros((15, 1))
 
+    def future_project(self, dt):
+        future_x_k = np.zeros((16, 1))
+        # STATE PREDICTION
+        # Position
+        future_x_k[0:3, 0] = self.x_k[0:3, 0] + self.x_k[3:6, 0] * dt + 0.5 * self.x_k[6:9, 0] * dt ** 2
+        future_x_k[3:6, 0] = self.x_k[3:6, 0] + self.x_k[6:9, 0] * dt
+        # self.x_k[6:9, 0] = self.x_k[6:9, 0]
+
+        # Rotation
+        q_k = Rot.from_quat([self.x_k[9, 0], self.x_k[10, 0], self.x_k[11, 0], self.x_k[12, 0]], scalar_first=True)
+        wt = Rot.from_rotvec(self.x_k[13:16, 0] * dt)
+        rotation = (wt * q_k).as_quat(scalar_first=True)
+        future_x_k[9:13, 0] = [rotation[0], rotation[1], rotation[2], rotation[3]]
+        # self.x_k[13:16, 0] = self.x_k[13:16, 0]
+
+        return future_x_k
