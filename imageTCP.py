@@ -7,6 +7,8 @@ import threading
 import queue
 
 from OpenCV_KF import OpenCV_KF
+from sliding_window import SlidingWindow
+
 import cv2
 import numpy as np
 import scipy.spatial.transform
@@ -286,6 +288,10 @@ def process_image_thread():
 
     dt = np.array([0], dtype=np.double)
 
+    # Initialize sliding window
+    sw_t = SlidingWindow(20, 3)
+    sw_r = SlidingWindow(20, 3)
+
     # Display image
     while running:
         # Check if image is in buffer
@@ -400,9 +406,14 @@ def process_image_thread():
 
                     inliers = None
                     
-
                 if success:
-                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any() or tvec[2] < 0:
+                    tvec_mag = np.linalg.norm(tvec)
+                    rvec_mag = scipy.spatial.transform.Rotation.from_rotvec(rvec.flatten()).magnitude()
+
+                    if np.any(np.abs(tvec) > 1e5) or np.isnan(tvec).any() or tvec[2] < 0 or sw_t.is_outlier(tvec_mag) or sw_r.is_outlier(rvec_mag):
+                        if sw_t.is_outlier(tvec_mag) or sw_r.is_outlier(rvec_mag):
+                            print(f"Outlier detected - tvec magnitude: {tvec_mag}, rvec magnitude: {rvec_mag}")
+
                         print("Pose estimation failed")
                         success = False
                         last_rvec, last_tvec = None, None # Reset for next frame
