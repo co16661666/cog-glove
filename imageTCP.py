@@ -14,6 +14,10 @@ import csv
 from datetime import datetime
 
 from markerDetector import getCorners
+from classification.graspInference import GraspInference
+
+predictor = GraspInference()
+predictor.start()
 
 # Program running
 running = True
@@ -376,23 +380,21 @@ def process_image_thread():
                         # 4. Refine with VVS (Smoother than LM)
                         rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                         last_rvec, last_tvec = rvec, tvec
-                        
-                        # Mark as successful and store values for CSV logging
-                        pose_success = True
-                        rvec_values = rvec.flatten().tolist()
-                        tvec_values = tvec.flatten().tolist()
-                
-                        marker_data = {
-                            "id": int(ids[0][0]),
-                            "tvec": tvec_values,
-                            "rvec": rvec_values
-                        }
 
-                        # print("JSON: ", json.dumps(corners_list))
-                        # Convert to JSON for sending
-                        json_send_message = json.dumps(marker_data) + '\n'
-                        # Put message in send queue
-                        send_queue.put(json_send_message.encode('utf-8'))
+                    grasped = predictor.is_grasped()
+                    print(f"Grasped: {grasped}")
+                    marker_data = {
+                        "id": int(ids[0][0]),
+                        "tvec": tvec.flatten().tolist(),
+                        "rvec": rvec.flatten().tolist(),
+                        "grasped": grasped
+                    }
+
+                    # print("JSON: ", json.dumps(corners_list))
+                    # Convert to JSON for sending
+                    json_send_message = json.dumps(marker_data) + '\n'
+                    # Put message in send queue
+                    send_queue.put(json_send_message.encode('utf-8'))
             
             # Write CSV row with timestamp and pose data
             csv_writer.writerow([latest_timestamp, rvec_values[0], rvec_values[1], rvec_values[2], tvec_values[0], tvec_values[1], tvec_values[2], pose_success])
