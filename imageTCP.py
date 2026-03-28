@@ -14,10 +14,18 @@ import csv
 from datetime import datetime
 
 from markerDetector import getCorners
-from classification.graspInference import GraspInference
 
-predictor = GraspInference()
-predictor.start()
+use_inference = True
+
+try:
+    from classification.graspInference import GraspInference
+
+    predictor = GraspInference()
+    predictor.start()
+
+except Exception as e:
+    use_inference = False
+    print(f"GraspInference initialization error: {e}")
 
 # Program running
 running = True
@@ -381,7 +389,11 @@ def process_image_thread():
                         rvec, tvec = cv2.solvePnPRefineVVS(obj_points, image_points, camera_matrix, dist_coeffs, rvec, tvec)
                         last_rvec, last_tvec = rvec, tvec
 
-                    grasped = predictor.is_grasped()
+                    if use_inference:
+                        grasped = predictor.is_grasped()
+                    else:
+                        grasped = False
+                        
                     print(f"Grasped: {grasped}")
                     marker_data = {
                         "id": int(ids[0][0]),
