@@ -399,7 +399,8 @@ def process_image_thread():
                         "id": int(ids[0][0]),
                         "tvec": tvec.flatten().tolist(),
                         "rvec": rvec.flatten().tolist(),
-                        "grasped": grasped
+                        "grasped": grasped,
+                        "timestamp": latest_timestamp
                     }
 
                     # print("JSON: ", json.dumps(corners_list))
