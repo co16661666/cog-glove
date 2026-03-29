@@ -290,8 +290,8 @@ def process_image_thread():
 
     x_forward = x.copy()
 
-    sigma_acc =  np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
-    sigma_gyro = np.array([4E-2, 4E-2, 4E-2], dtype=np.double)
+    sigma_acc =  np.array([1E-1, 1E-1, 1E-1], dtype=np.double)
+    sigma_gyro = np.array([8E-2, 8E-2, 8E-2], dtype=np.double)
     Q = np.diag(np.concatenate((sigma_acc**2, sigma_gyro**2)))
     
     pos_var = np.array([8.82E-6, 4.52E-6, 1.47E-6], dtype=np.double)
@@ -305,8 +305,8 @@ def process_image_thread():
     dt = np.array([0], dtype=np.double)
 
     # Initialize sliding window
-    sw_t = SlidingWindow(20, 3)
-    sw_r = SlidingWindow(20, 3)
+    sw_t = SlidingWindow(5, 3)
+    sw_r = SlidingWindow(5, 3)
 
     # Display image
     while running:
@@ -422,7 +422,7 @@ def process_image_thread():
                         last_rvec, last_tvec = None, None # Reset for next frame
 
                         x = np.zeros((16, 1), dtype=np.double)
-                        x[10, 0] = 1
+                        x[9, 0] = 1
                         P = np.eye(15, dtype=np.double) * 0.5
                         continue
                     else:
@@ -483,24 +483,25 @@ def process_image_thread():
                         tvec = translation.reshape((3, 1)).flatten()
 
                         last_rvec, last_tvec = rvec, tvec
+
+                        t_6_e = time.perf_counter()
                         
                         # Forward projection
                         # Measure latency
-                        t_now_ns = time.time_ns() # TODO: Double check logic, likely different timers
-                        pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
+                        # t_now_ns = time.time_ns() # TODO: Double check logic, likely different timers
+                        # pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
+                        pipeline_latency_s = (t_6_e - t_0_s) * 1.2
 
                         # Prevent extreme values
                         pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
 
-                        dt_forward = pipeline_latency_s * 0.25
-                        x_forward = kf.future_project(dt_forward)
+                        x_forward = kf.future_project(pipeline_latency_s)
 
                         rotation_forward = scipy.spatial.transform.Rotation.from_quat([x_forward[9, 0], x_forward[10, 0], x_forward[11, 0], x_forward[12, 0]], scalar_first=True)
                         rvec_forward = rotation_forward.as_rotvec().flatten()
 
                         translation_forward = x_forward[0:3, 0]
                         tvec_forward = translation_forward.reshape((3, 1)).flatten()
-                        t_6_e = time.perf_counter()
 
                         t_7_s = time.perf_counter()
                         # Mark as successful and store filtered values for CSV logging
