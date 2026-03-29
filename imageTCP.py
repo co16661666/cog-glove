@@ -20,6 +20,18 @@ from datetime import datetime
 
 from markerDetector import getCorners
 
+use_inference = True
+
+try:
+    from classification.graspInference import GraspInference
+
+    predictor = GraspInference()
+    predictor.start()
+
+except Exception as e:
+    use_inference = False
+    print(f"GraspInference initialization error: {e}")
+
 # Program running
 running = True
 
@@ -28,6 +40,9 @@ send_queue = queue.Queue()
 
 # Buffer to hold lastest image, deque to automatically discard old images
 latest_image_buffer = deque(maxlen=1)
+
+# Buffer to hold latest timestamp
+latest_timestamp = 0
 
 # Buffer to hold latest timestamp
 latest_timestamp = 0
@@ -249,6 +264,7 @@ def scale_camera_matrix(vals):
 def process_image_thread():
     global camera_matrix
     global image_save_counter
+    global latest_timestamp
     global latest_timestamp
     global previous_timestamp
 
@@ -492,13 +508,21 @@ def process_image_thread():
                         filtered_rvec_values = rvec_forward.tolist()
                         filtered_tvec_values = tvec_forward.tolist()
 
+                        rvec_kalman = rotation.as_rotvec().flatten()
+
+                        if use_inference:
+                            grasped = predictor.is_grasped()
+                        else:
+                            grasped = False
+                            
+                        print(f"Grasped: {grasped}")
                         marker_data = {
                             "id": int(ids[0][0]),
                             "tvec": filtered_tvec_values,
-                            "rvec": filtered_rvec_values
+                            "rvec": filtered_rvec_values,
+                            "grasped": grasped,
+                            "timestamp": latest_timestamp
                         }
-
-                        rvec_kalman = rotation.as_rotvec().flatten()
 
                         # print("JSON: ", json.dumps(corners_list))
                         # Convert to JSON for sending
@@ -518,6 +542,20 @@ def process_image_thread():
         except Exception as e:
             print(f"Error decoding raw image data: {e}")
             traceback.print_exc()
+    
+    # Close CSV file on thread exit
+    try:
+        csv_file.close()
+        print(f"CSV file {csv_filename} closed successfully")
+    except Exception as e:
+        print(f"Error closing CSV file: {e}")
+    
+    # Close CSV file on thread exit
+    try:
+        csv_file.close()
+        print(f"CSV file {csv_filename} closed successfully")
+    except Exception as e:
+        print(f"Error closing CSV file: {e}")
     
     # Close CSV file on thread exit
     try:
