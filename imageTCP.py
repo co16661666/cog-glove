@@ -1,3 +1,4 @@
+import struct
 import sys
 import traceback
 
@@ -43,6 +44,8 @@ latest_image_buffer = deque(maxlen=1)
 
 # Buffer to hold latest timestamp
 latest_timestamp = 0
+latest_cam_pos = np.zeros(3, dtype=np.float32)
+latest_cam_rot = np.zeros(4, dtype=np.float32)
 
 # Buffer to hold latest timestamp
 latest_timestamp = 0
@@ -327,7 +330,7 @@ def process_image_thread():
             # If client uses RGB24, channels=3.
             # img = cv2.imdecode(np_arr, 1)
             t_1_s = time.perf_counter()
-            img = np.frombuffer(latest_image_buffer.pop(), np.uint8).reshape((640, 640)) #TODO: Make resolution dynamic based on handshake intrinsics
+            img = np.frombuffer(latest_image_buffer.pop(), np.uint8).reshape((1280, 1280)) #TODO: Make resolution dynamic based on handshake intrinsics
             img = img = cv2.flip(img, 0)
             
             if img is None:
@@ -422,7 +425,7 @@ def process_image_thread():
                         last_rvec, last_tvec = None, None # Reset for next frame
 
                         x = np.zeros((16, 1), dtype=np.double)
-                        x[9, 0] = 1
+                        x[10, 0] = 1
                         P = np.eye(15, dtype=np.double) * 0.5
                         continue
                     else:
@@ -436,8 +439,22 @@ def process_image_thread():
                             image_points_inliers = image_points
 
                         rvec, tvec = cv2.solvePnPRefineVVS(obj_points_inliers, image_points_inliers, camera_matrix, dist_coeffs, rvec, tvec)
-                        rvec_raw = rvec.copy()
-                        tvec_raw = tvec.copy()
+                        
+                        # Convert received camera pose to OpenCV right-hand coordinates and into scipy/numpy format
+                        cam_rot_scipy = scipy.spatial.transform.Rotation.from_quat([-latest_cam_rot[0], latest_cam_rot[1], -latest_cam_rot[2], latest_cam_rot[3]], scalar_first=True)
+                        tvec_cam = np.array([tvec[0], tvec[1], tvec[2]])
+                        
+                        # Tranform to world coordinates
+                        tvec_world = [latest_cam_pos[0], -latest_cam_pos[1], latest_cam_pos[2]] + cam_rot_scipy.apply(tvec_cam.flatten())
+
+                        # Transform to world coordinates
+                        rvec_scipy = scipy.spatial.transform.Rotation.from_rotvec(rvec.flatten())
+                        world_rot = cam_rot_scipy * rvec_scipy
+                        rvec_world = world_rot.as_rotvec()
+
+                        
+                        rvec_raw = rvec_world.copy()
+                        tvec_raw = tvec_world.copy()
                         
                         # Store raw values for CSV logging
                         raw_rvec_values = rvec_raw.flatten().tolist()
@@ -454,7 +471,7 @@ def process_image_thread():
                         kf.predict(dt)
 
                         # Kalman Filter Update
-                        y_k = np.concatenate((tvec.flatten(), rvec.flatten())).reshape((6, 1))
+                        y_k = np.concatenate((tvec_world.flatten(), rvec_world.flatten())).reshape((6, 1))
                         kf.update(y_k)
                         x = kf.x_k
                         dx = kf.dx_k
@@ -490,7 +507,8 @@ def process_image_thread():
                         # Measure latency
                         # t_now_ns = time.time_ns() # TODO: Double check logic, likely different timers
                         # pipeline_latency_s = (t_now_ns - latest_timestamp) * 1e-9
-                        pipeline_latency_s = (t_6_e - t_0_s) * 1.2
+                        pipeline_latency_s = (t_6_e - t_0_s) + 6 * 0.01
+                        print(pipeline_latency_s)
 
                         # Prevent extreme values
                         pipeline_latency_s = np.clip(pipeline_latency_s, 0.0, 0.2)
@@ -576,6 +594,8 @@ def receiver_thread(client_socket, addr):
     global camera_matrix
     global running
     global latest_timestamp
+    global latest_cam_pos
+    global latest_cam_rot
 
     # --- INTRINSICS PHASE ---
     try:
@@ -620,11 +640,28 @@ def receiver_thread(client_socket, addr):
 
                 timestamp += remaining
             
+            pos_bytes = b''
+            while len(pos_bytes) < 12:
+                remaining = client_socket.recv(12 - len(pos_bytes))
+                if not remaining: break
+                pos_bytes += remaining
+
+            rot_bytes = b''
+            while len(rot_bytes) < 16:
+                remaining = client_socket.recv(16 - len(rot_bytes))
+                if not remaining: break
+                rot_bytes += remaining
+
             timestamp = int.from_bytes(timestamp, byteorder='big')
 
             # print(f"Received length bytes from {str(addr)}: {length}")
 
             image_size = int.from_bytes(length, byteorder='big')
+
+            cam_pos = np.array(struct.unpack('>fff', pos_bytes), dtype=np.float32)  # x, y, z
+            
+            cam_rot = np.array(struct.unpack('>ffff', rot_bytes), dtype=np.float32) # w, x, y, z
+
 
             # Receive image
             image = b''
@@ -641,6 +678,8 @@ def receiver_thread(client_socket, addr):
 
             # Store timestamp globally
             latest_timestamp = timestamp
+            latest_cam_pos = cam_pos
+            latest_cam_rot = cam_rot
 
             # If buffer is not empty, replace old data; otherwise, append new data
             if len(latest_image_buffer) > 0:
