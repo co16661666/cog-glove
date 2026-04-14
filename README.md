@@ -24,11 +24,13 @@ The imageTCP.py script actively grabs the most recent image from the image buffe
 4. Send filtered pose (position and rotation) back to Unity TCP client
 
 The data is sent back to the Quest as a UTF-8 encoded JSON:
-`marker_data = {
+```
+marker_data = {
     "id": int(ids[0][0]),
     "tvec": filtered_tvec_values,
     "rvec": filtered_rvec_values,
     "grasped": grasped,
     "timestamp": latest_timestamp
-}`
+}
+```
 where `id` (currently unused) is a list of the IDs of the markers detected; `tvec` is the translation vector (OpenCV frame); `rvec` is the rotation vector (OpenCV frame); `grasped` is whether or not the cube is classified as grasped; and `timestamp` is the timestamp of the image for lookup on Unity side.
