@@ -3,7 +3,7 @@ This repo is a part of the cognition glove project I am working on that involves
 
 In addition to pose detection, this project also involves grasp detection of the cube through a glove with embedded sensors. The glove sends sensor data over Serial port, and graspInference.py runs a binary classification algorithm to determine grasp success.
 ## Running the Program
-The main file is imageTCP.py, the remaining scripts are mainly helper functions and classes. onnx_classifier_test.py allows testing of the classification model.
+**The main file is `imageTCP.py`**, the remaining scripts are mainly helper functions and classes. onnx_classifier_test.py allows testing of the classification model.
 ## TCP Communication Details
 ### Handshake Phase
 After the initial connection, but before image streaming begins, imageTCP.py expects to receive the camera intrinsics as a UTF-8 string formatted as `{fx},{fy},{cx},{cy},{targetWidth},{targetHeight}`. Currently, the variables are sent as floats, but the Python TCP server reads up to 1024 bytes. The script will then send a confirmation string  `HANDSHAKE_OK\n` (also UTF-8 encoded) to begin image streaming.
@@ -34,3 +34,20 @@ marker_data = {
 }
 ```
 where `id` (currently unused) is a list of the IDs of the markers detected; `tvec` is the translation vector (OpenCV frame); `rvec` is the rotation vector (OpenCV frame); `grasped` is whether or not the cube is classified as grasped; and `timestamp` is the timestamp of the image for lookup on Unity side.
+## Pose Estimation Pipeline
+The pose estimation involves OpenCV corner detection and solvePnP, which is then passed through an error-state extended Kalman filter (ESEKF)
+### OpenCV Pipepline
+#### Corner Detection
+Key details:
+- File: `markerDetector.py`
+- Marker dictionary: `DICT_4X4_50`
+- Corner refinement method: `CORNER_REFINE_SUBPIX`
+#### Pose Estimation
+Key details:
+- `solvePnPRansac` with `SOLVEPNPITERATIVE` flag
+- Fallback to `solvePnP` with `SOLVEPNP_SQPNP` if last solve failed
+### Refinement
+Key details:
+- solvePnPRefineVVS
+## Error-State Extended Kalman Filter
+Kalman filter class is in `OpenCV_KF.py` and implemented in `imageTCP.py`. It uses a model assuming constant accleration and constant rotational velocity.
